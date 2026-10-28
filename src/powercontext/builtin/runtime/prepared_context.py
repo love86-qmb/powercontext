@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from itertools import chain
@@ -106,6 +107,21 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[PreparedContextFragment, ...] = ()
+
+
+@dataclass(frozen=True)
+class PreparedContextFragment:
+    """One literal slice of a Memory entry delivered as query-selected evidence.
+
+    ``text`` is always ``entry_text[start:end]``: a fragment is a view of the original record,
+    never a rewrite, translation, or generated summary.
+    """
+
+    address: MemoryEntryAddress
+    start: int
+    end: int
+    text: str
 
 
 @dataclass(frozen=True)
@@ -235,6 +251,13 @@ class PreparedContextBuilder:
         if sum(len(candidates.hits) for candidates in experience_candidates) > self.experience_candidate_limit:
             raise PreparedContextInvariantError("experience-candidate-limit")
 
+        if request.evidence_selection:
+            return self._build_selection_result(
+                request=request,
+                current_scope_id=current_scope_id,
+                memory_candidates=memory_candidates,
+            )
+
         content, origins, omissions = self._select_entries(
             request=request,
             current_scope_id=current_scope_id,
@@ -254,6 +277,73 @@ class PreparedContextBuilder:
             context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
             origins=origins,
             omissions=omissions,
+        )
+
+    def _build_selection_result(
+        self,
+        *,
+        request: PrepareContextRequest,
+        current_scope_id: str | None,
+        memory_candidates: Sequence[PreparedMemoryCandidates],
+    ) -> PreparedContextBuild:
+        """Deliver the most query-relevant literal slices that fit the byte budget.
+
+        Fragments are exact slices of the entry text, so every delivered item keeps an exact
+        citation and character range. The budget covers the whole rendered output, including
+        the trust policy, envelope markers and citations, not just the excerpt characters.
+        """
+
+        spans: list[_SelectionSpan] = []
+        for candidates in memory_candidates:
+            scope_id = candidates.scope_id or current_scope_id
+            if not scope_id:
+                continue
+            for hit in candidates.hits:
+                if not hit.entry_id.strip() or not hit.entry_version_id.strip() or not hit.text.strip():
+                    continue
+                address = MemoryEntryAddress(
+                    memory=ArtifactAddress(scope_id=scope_id, artifact=hit.memory_ref),
+                    entry_id=hit.entry_id,
+                    entry_version_id=hit.entry_version_id,
+                )
+                for start, end in _evidence_spans(hit.text):
+                    piece = hit.text[start:end]
+                    if not piece.strip():
+                        continue
+                    spans.append(
+                        _SelectionSpan(
+                            fragment=PreparedContextFragment(
+                                address=address,
+                                start=start,
+                                end=end,
+                                text=piece,
+                            ),
+                            score=_evidence_score(request.query, piece),
+                            order=len(spans),
+                        )
+                    )
+        if not spans:
+            return PreparedContextBuild(context=self.empty(), origins=(), fragments=())
+
+        spans.sort(key=lambda span: (-span.score, span.order))
+        chosen: list[_SelectionSpan] = []
+        for span in spans:
+            trial = (*chosen, span)
+            if len(_render_fragments(trial).encode("utf-8")) > request.max_bytes:
+                continue
+            chosen.append(span)
+        if not chosen:
+            return PreparedContextBuild(context=self.empty(), origins=(), fragments=())
+
+        content = _render_fragments(tuple(chosen))
+        return PreparedContextBuild(
+            context=PreparedContext(
+                status="ready",
+                content=content,
+                content_bytes=len(content.encode("utf-8")),
+            ),
+            origins=tuple(span.fragment.address for span in chosen),
+            fragments=tuple(span.fragment for span in chosen),
         )
 
     def probe_budget(
@@ -683,6 +773,64 @@ def _interleave_groups(groups: Sequence[Sequence[_Item]]) -> tuple[_Item, ...]:
     for index in range(max((len(group) for group in groups), default=0)):
         ordered.extend(group[index] for group in groups if index < len(group))
     return tuple(ordered)
+
+
+@dataclass(frozen=True)
+class _SelectionSpan:
+    """One candidate evidence slice with its query relevance and original order."""
+
+    fragment: PreparedContextFragment
+    score: int
+    order: int
+
+
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
+_EVIDENCE_TOKEN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]")
+
+
+def _evidence_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Split one entry into whole-sentence spans of its original characters."""
+
+    spans: list[tuple[int, int]] = []
+    position = 0
+    for match in _SENTENCE_BREAK.finditer(text):
+        spans.append((position, match.end()))
+        position = match.end()
+    if position < len(text):
+        spans.append((position, len(text)))
+    kept = tuple((start, end) for start, end in spans if end > start and text[start:end].strip())
+    return kept or ((0, len(text)),)
+
+
+def _evidence_score(query: str, piece: str) -> int:
+    """Count the distinct query terms a slice literally contains."""
+
+    wanted = {token.lower() for token in _EVIDENCE_TOKEN.findall(query)}
+    if not wanted:
+        return 0
+    return len(wanted & {token.lower() for token in _EVIDENCE_TOKEN.findall(piece)})
+
+
+def _render_fragments(spans: Sequence[_SelectionSpan]) -> str:
+    envelope = {
+        "trust": "untrusted_history",
+        "items": [
+            {
+                "citation": {
+                    "scope_id": span.fragment.address.memory.scope_id,
+                    "memory_ref": span.fragment.address.memory.artifact.model_dump(mode="json"),
+                    "entry_id": span.fragment.address.entry_id,
+                    "entry_version_id": span.fragment.address.entry_version_id,
+                },
+                "content": span.fragment.text,
+                "start": span.fragment.start,
+                "end": span.fragment.end,
+            }
+            for span in spans
+        ],
+    }
+    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+    return "\n\n".join((TRUST_POLICY, f"{_BEGIN_MARKER}\n{encoded}\n{_END_MARKER}"))
 
 
 def _render(entries: Sequence[_PreparedContextEntry]) -> str:
