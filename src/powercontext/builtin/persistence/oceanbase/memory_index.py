@@ -97,6 +97,34 @@ WHERE m.scope_id = :scope_id
 ORDER BY l2_distance(m.embedding, :query_vector) APPROXIMATE
 LIMIT :candidate_limit
 """
+# One statement that carries both candidate channels: the FULLTEXT predicate keeps
+# the native text index in the plan, and the vector ORDER BY keeps the native vector
+# index in the plan, so no application-side merge or table scan is needed.
+_OCEANBASE_HYBRID_SEARCH_SQL = """
+SELECT
+    m.memory_artifact_id,
+    m.head_revision,
+    m.entry_id,
+    m.entry_version_id,
+    txt.text,
+    MATCH(m.searchable_text) AGAINST (:analyzed_query) AS fts_score,
+    l2_distance(vec.embedding, :query_vector) AS distance
+FROM pc_memory_entry_heads AS m
+JOIN pc_memory_vector_entries AS vec
+  ON vec.scope_id = m.scope_id
+ AND vec.memory_artifact_id = m.memory_artifact_id
+ AND vec.entry_id = m.entry_id
+ AND vec.entry_version_id = m.entry_version_id
+JOIN pc_memory_entry_versions AS txt
+  ON txt.scope_id = m.scope_id
+ AND txt.memory_artifact_id = m.memory_artifact_id
+ AND txt.entry_version_id = m.entry_version_id
+WHERE m.scope_id = :scope_id
+  AND m.memory_artifact_id IN :memory_artifact_ids
+  AND MATCH(m.searchable_text) AGAINST (:analyzed_query)
+ORDER BY l2_distance(vec.embedding, :query_vector) APPROXIMATE
+LIMIT :candidate_limit
+"""
 
 
 class OceanBaseMemoryFTSIndex:
@@ -284,6 +312,77 @@ class OceanBaseMemoryVectorIndex:
             bindparam("tag_keys", expanding=True),
             bindparam("tag_hashes", expanding=True),
             bindparam("query_vector", type_=VECTOR(profile.dimension)),
+        )
+        self._hybrid_sql = text(_OCEANBASE_HYBRID_SEARCH_SQL).bindparams(
+            bindparam("memory_artifact_ids", expanding=True),
+            bindparam("query_vector", type_=VECTOR(profile.dimension)),
+        )
+        self._tagged_hybrid_sql = text(
+            _OCEANBASE_HYBRID_SEARCH_SQL.replace("ORDER BY", memory_tag_sql("m") + "ORDER BY").replace(
+                " APPROXIMATE", ""
+            )
+        ).bindparams(
+            bindparam("memory_artifact_ids", expanding=True),
+            bindparam("tag_keys", expanding=True),
+            bindparam("tag_hashes", expanding=True),
+            bindparam("query_vector", type_=VECTOR(profile.dimension)),
+        )
+
+    # One native statement carries both candidate channels, so the composite index
+    # can satisfy ``hybrid`` without issuing the FTS and vector queries separately.
+    native_hybrid = True
+
+    async def search_hybrid(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        request: MemorySearchRequest,
+        /,
+    ) -> MemorySearchChannels:
+        """Return both channels from one statement that uses both native indexes."""
+
+        if request.embedding_profile != self.profile or request.query_vector is None:
+            raise CapabilityNotSupportedError("embedding-profile")
+        if not await self.vector_complete(connection, scope_id, request.memories, self.profile):
+            raise CapabilityNotSupportedError("vector")
+        rows = list(
+            (
+                await connection.execute(
+                    self._hybrid_sql if request.tag_filter is None else self._tagged_hybrid_sql,
+                    {
+                        "scope_id": scope_id,
+                        "memory_artifact_ids": tuple(memory.artifact_id for memory in request.memories),
+                        "query_vector": validate_embedding(
+                            request.query_vector,
+                            dimension=self.profile.dimension,
+                        ),
+                        "analyzed_query": request.analyzed_query,
+                        "candidate_limit": request.candidate_limit,
+                        **memory_tag_parameters(request.tag_filter),
+                    },
+                )
+            ).mappings()
+        )
+        # The text channel only carries entries the FULLTEXT predicate matched, and it
+        # ranks by relevance; the vector channel keeps the statement distance order.
+        matched = [
+            (float(row.get("fts_score") or 0.0), row)
+            for row in rows
+            if float(row.get("fts_score") or 0.0) > 0.0
+        ]
+        matched.sort(key=lambda item: (-item[0], str(item[1]["entry_id"])))
+        text_rows = tuple(
+            {
+                "memory_artifact_id": row["memory_artifact_id"],
+                "entry_id": row["entry_id"],
+                "entry_version_id": row["entry_version_id"],
+                "text": row["text"],
+            }
+            for _score, row in matched
+        )
+        return MemorySearchChannels(
+            fts=memory_channel_hits(text_rows, request.memories),
+            vector=memory_channel_hits(tuple(rows), request.memories),
         )
 
     async def initialize(self, connection: AsyncConnection, /) -> None:
