@@ -657,6 +657,7 @@ async def open_builtin_runtime(
             _open_artifact_processing_supervisor(config, contexts, processing_bindings, tracing=tracing)
         )
         contexts.profiles.operation_context = runtime._operation
+        _start_source_count_processing(runtime, config)
         if config.handoff_report.enabled:
             runtime.handoff_report = HandoffReportApplication(
                 contexts.scopes,
@@ -666,6 +667,23 @@ async def open_builtin_runtime(
             raise BuiltinConfigurationError("memory-reranker")
         _require_decision_backend(config.runtime, configured_decision)
         yield runtime
+
+
+def _start_source_count_processing(runtime: Any, config: BuiltinConfig) -> None:
+    """Admit counted Family processing for every configured positive threshold."""
+
+    from powercontext.builtin.runtime.processing_registry import processing_capabilities
+
+    declared = set(processing_capabilities(config))
+    thresholds = {
+        family: threshold
+        for family, threshold in (
+            ("memory", config.runtime.memory_source_count_threshold),
+            ("topic-memory", config.runtime.topic_memory_source_count_threshold),
+        )
+        if threshold is not None and family in declared
+    }
+    runtime.start_source_count_processing(thresholds)
 
 
 def _validate_processing_source_registry(

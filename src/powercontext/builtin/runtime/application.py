@@ -171,6 +171,7 @@ from powercontext.builtin.runtime.context_pack import (
     ContextPack,
     ContextPackDelta,
 )
+from powercontext.builtin.runtime.count_trigger import SourceCountProcessor
 from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.models import (
@@ -3118,6 +3119,8 @@ class BuiltinRuntime:
             observer=scope_cache_observer,
         )
         self._processor_lock = asyncio.Lock()
+        self._scope_ids = scope_ids
+        self._source_count_processor: SourceCountProcessor | None = None
         self._close_lock = asyncio.Lock()
         self._lifecycle = asyncio.Condition()
         self._active_operations = 0
@@ -3152,6 +3155,42 @@ class BuiltinRuntime:
 
     async def __aenter__(self) -> BuiltinRuntime:
         return self
+
+    def start_source_count_processing(self, thresholds: Mapping[str, int], /) -> SourceCountProcessor | None:
+        """Admit Family processing once enough new Source identities accumulate.
+
+        Called once the Supervisor and its bindings exist, so a counted start is
+        the same call the time condition already accepts. Thresholds left as
+        ``None`` keep today's time-only behaviour.
+        """
+
+        configured = {
+            family: threshold for family, threshold in thresholds.items() if isinstance(threshold, int)
+        }
+        if not configured or self._scope_ids is None:
+            return None
+        processor = SourceCountProcessor(self, configured)
+        processor.start()
+        self._source_count_processor = processor
+        return processor
+
+    async def _source_count_scope_ids(self) -> tuple[str, ...]:
+        """Return the scopes a counted start must consider right now."""
+
+        scope_ids = self._scope_ids
+        if scope_ids is None:
+            return ()
+        return await scope_ids()
+
+    async def _family_source_frontier(self, scope_id: str, trigger_name: str, /) -> tuple[int, int] | None:
+        """Return one Family's consumed Cursor and the scope's journal high watermark."""
+
+        async with self._context(scope_id) as context:
+            frontier = getattr(context.triggers, "source_frontier", None)
+            if frontier is None:
+                return None
+            consumed, high_watermark = await frontier(trigger_name)
+        return int(consumed), int(high_watermark)
 
     async def __aexit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         await self.close()
@@ -3290,6 +3329,9 @@ class BuiltinRuntime:
         async with self._close_lock:
             if self._closed:
                 return
+            if self._source_count_processor is not None:
+                processor, self._source_count_processor = self._source_count_processor, None
+                await processor.close()
             if self._scheduler is not None and self._scheduler.running:
                 self._scheduler.pause()
             async with self._lifecycle:

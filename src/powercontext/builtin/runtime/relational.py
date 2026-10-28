@@ -1681,6 +1681,21 @@ class _RelationalTriggers:
             )
         return self._trigger.initial_state() if state is None else state.cursor
 
+    async def source_frontier(self, trigger_name: str, /) -> tuple[int, int]:
+        """Return one binding's consumed Cursor and this scope's journal high watermark."""
+
+        async with self._services.database.transaction() as connection:
+            state = await self._services.repositories.cursors.load(
+                connection,
+                self._services.scope_id,
+                trigger_name,
+            )
+            high_watermark = await self._services.repositories.sources.journal_position(
+                connection,
+                self._services.scope_id,
+            )
+        return (0 if state is None else state.cursor.sequence), high_watermark
+
     @prompt_operation("memory.extract")
     async def flush(
         self,
