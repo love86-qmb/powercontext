@@ -857,9 +857,8 @@ class ScopedContextApplication:
     async def prepare_incremental(
         self,
         request: PrepareContextRequest,
-        /,
-        *,
         base_pack: ContextPack | None = None,
+        *,
         chunk_bytes: int = CONTEXT_PACK_CHUNK_BYTES,
     ) -> ContextPack | ContextPackDelta:
         """Prepare context and encode it as a transferable pack or a reuse delta.

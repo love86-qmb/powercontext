@@ -71,7 +71,7 @@ class ContextPack:
         return cls(items=resolved, digest=digest, byte_count=_settled_byte_count(resolved, digest))
 
     @classmethod
-    def from_content(cls, content: str, /, *, chunk_bytes: int) -> ContextPack:
+    def from_content(cls, content: str, /, *, chunk_bytes: int = CONTEXT_PACK_CHUNK_BYTES) -> ContextPack:
         """Build a pack by chunking UTF-8 text without splitting a character."""
 
         if not isinstance(content, str):

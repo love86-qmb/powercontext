@@ -41,30 +41,50 @@ PDF_PAGE_DEFINITION_VERSION = "1"
 _PDF_PAGE_IDENTITY_SCHEME = "pdf"
 _MAX_IDENTITY_HASH_LENGTH = 64
 _DEFAULT_SEARCH_PAGE_LIMIT = 100
-_MAX_QUERY_TERMS = 6
+_MAX_QUERY_TERMS = 8
+_MAX_INFLECTION_TERMS = 6
 _MINIMUM_TERM_LENGTH = 3
 _QUERY_TOKEN = re.compile(r"[a-z]+|\d+")
 _QUERY_STOPWORDS = frozenset({
     "and",
     "any",
     "are",
+    "been",
+    "both",
+    "does",
     "for",
     "from",
     "has",
     "have",
-    "how",
+    "into",
     "its",
     "much",
+    "only",
+    "over",
+    "such",
+    "than",
+    "that",
     "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
     "was",
     "were",
     "what",
     "when",
     "where",
     "which",
+    "while",
     "who",
     "why",
+    "will",
     "with",
+    "would",
 })
 
 
@@ -168,20 +188,41 @@ async def search_pdf_pages(memory: object, question: str, limit: int = 10) -> tu
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("limit must be a positive integer")
 
-    citations: list[MemoryCitation] = []
-    pages: set[tuple[str, str]] = set()
+    ranked: list[tuple[object, ...]] = []
     for query in _query_plan(question):
-        if len(citations) >= limit:
-            break
         try:
             page = await memory.search(
                 SearchMemoryRequest(query=query, mode="fts", limit=_DEFAULT_SEARCH_PAGE_LIMIT)
             )
         except Exception:  # noqa: BLE001 - one unusable query must not lose the others
             continue
-        for hit in page.hits:
+        if page.hits:
+            ranked.append(tuple(page.hits))
+
+    citations: list[MemoryCitation] = []
+    pages: set[tuple[str, str]] = set()
+    entries: set[tuple[str, int, str, str]] = set()
+    depth = 0
+    # Round-robin across passes instead of draining the first one: a long report
+    # rarely hides its evidence page behind a single whole-question match, but a
+    # specific term usually reaches it, so every pass contributes its best page
+    # before any pass contributes its second.
+    while len(citations) < limit and any(depth < len(hits) for hits in ranked):
+        for hits in ranked:
             if len(citations) >= limit:
                 break
+            if depth >= len(hits):
+                continue
+            hit = hits[depth]
+            identity = (
+                hit.memory_ref.artifact_id,
+                hit.memory_ref.revision,
+                hit.entry_id,
+                hit.entry_version_id,
+            )
+            if identity in entries:
+                continue
+            entries.add(identity)
             citation = MemoryCitation(
                 memory_ref=hit.memory_ref,
                 entry_id=hit.entry_id,
@@ -191,25 +232,70 @@ async def search_pdf_pages(memory: object, question: str, limit: int = 10) -> tu
                 entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
             except Exception:  # noqa: BLE001 - a stale hit is simply skipped
                 continue
-            identities = {(reference.source_type, reference.source_id) for reference in entry.sources}
-            if not identities or identities & pages:
+            sources = {(reference.source_type, reference.source_id) for reference in entry.sources}
+            if not sources or sources & pages:
                 continue
-            pages |= identities
+            pages |= sources
             citations.append(citation)
+        depth += 1
     return tuple(citations)
 
 
 def _query_plan(question: str) -> tuple[str, ...]:
-    """Return the question first, then its most specific terms as extra passes."""
+    """Return the question, its most specific terms and their inflected forms.
+
+    Analyzer v1 casefolds and splits words without stemming, so the stored page
+    text only matches the exact surface form. A question that says
+    ``geographies`` therefore cannot reach a page that says ``geography``
+    unless the plural and verb forms are searched explicitly.
+    """
 
     plan = [question]
-    seen = set(_QUERY_TOKEN.findall(question.lower()))
-    for term in sorted(
-        (term for term in seen if len(term) >= _MINIMUM_TERM_LENGTH and term not in _QUERY_STOPWORDS),
+    seen = _QUERY_TOKEN.findall(question.lower())
+    ordered = sorted(
+        (term for term in set(seen) if len(term) >= _MINIMUM_TERM_LENGTH and term not in _QUERY_STOPWORDS),
         key=lambda term: (-len(term), term),
-    )[:_MAX_QUERY_TERMS]:
-        plan.append(term)
+    )
+    exact = ordered[:_MAX_QUERY_TERMS]
+    plan.extend(exact)
+    known = set(exact) | {question}
+    for term in exact:
+        for variant in sorted(_inflections(term)):
+            if len(plan) >= _MAX_QUERY_TERMS + 1 + _MAX_INFLECTION_TERMS:
+                break
+            if variant in known:
+                continue
+            known.add(variant)
+            plan.append(variant)
     return tuple(plan)
+
+
+def _inflections(term: str) -> set[str]:
+    """Return the plausible surface-form variants of one English query term."""
+
+    variants: set[str] = set()
+    if len(term) < 5:
+        return variants
+    if term.endswith("ies") or term.endswith("ied"):
+        # Singular forms of ``-ies``/``-ied`` are the useful surface forms; the
+        # generic suffix rules below would only add unusable fragments.
+        variants.add(term[:-3] + "y")
+        return {variant for variant in variants if len(variant) >= _MINIMUM_TERM_LENGTH}
+    if term.endswith("ing"):
+        variants.update({term[:-3], term[:-3] + "e"})
+    if term.endswith("ed"):
+        variants.add(term[:-2])
+    if term.endswith("es"):
+        variants.add(term[:-1])
+    if term.endswith("s") and not term.endswith("ss"):
+        variants.add(term[:-1])
+    if term.endswith("ly"):
+        variants.add(term[:-2])
+    if term.endswith("ment"):
+        variants.add(term[:-4])
+    if term.endswith("ion"):
+        variants.update({term[:-3], term[:-3] + "e"})
+    return {variant for variant in variants if len(variant) >= _MINIMUM_TERM_LENGTH}
 
 
 class PDFPageSourceAdapter:
