@@ -166,6 +166,11 @@ from powercontext.builtin.runtime._scope_cache import (
     ScopeCacheObserver,
     ScopeEvictor,
 )
+from powercontext.builtin.runtime.context_pack import (
+    CONTEXT_PACK_CHUNK_BYTES,
+    ContextPack,
+    ContextPackDelta,
+)
 from powercontext.builtin.runtime.decision_model import DecisionModel
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.models import (
@@ -846,6 +851,28 @@ class ScopedContextApplication:
             if authorize_scopes is not None:
                 await authorize_scopes((self.scope_id, *scope.context_references))
             return await self._prepare(request, scope)
+
+    async def prepare_incremental(
+        self,
+        request: PrepareContextRequest,
+        /,
+        *,
+        base_pack: ContextPack | None = None,
+        chunk_bytes: int = CONTEXT_PACK_CHUNK_BYTES,
+    ) -> ContextPack | ContextPackDelta:
+        """Prepare context and encode it as a transferable pack or a reuse delta.
+
+        The prepared context is always computed in full, so the encoded pack
+        describes exactly what an Agent turn would receive. Passing the pack a
+        receiver already holds yields a delta that reuses its unchanged leading
+        chunks instead of retransmitting them.
+        """
+
+        prepared = await self.prepare(request)
+        pack = ContextPack.from_content(prepared.content or "", chunk_bytes=chunk_bytes)
+        if base_pack is None:
+            return pack
+        return ContextPackDelta.between(base_pack, pack)
 
     async def _prepare(self, request: PrepareContextRequest, scope: ScopeDescriptor, /) -> PreparedContext:
         build, effort = await self._prepare_build(request, scope)
