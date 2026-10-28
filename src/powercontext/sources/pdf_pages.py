@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import re
+import weakref
+from collections import Counter
 from urllib.parse import quote
 
 from pydantic import BaseModel
@@ -43,6 +46,32 @@ _MAX_IDENTITY_HASH_LENGTH = 64
 _DEFAULT_SEARCH_PAGE_LIMIT = 100
 _MAX_QUERY_TERMS = 8
 _MAX_INFLECTION_TERMS = 6
+_DEFAULT_SEARCH_PAGE_HITS = 40
+_MAX_ENTRY_LOOKUPS = 500
+_PASS_QUESTION_WEIGHT = 2.5
+_MAX_CORPUS_ENTRIES = 20000
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+
+_CORPUS_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+class _PageCandidate:
+    """One evidence page and the retrieval support accumulated for it."""
+
+    __slots__ = ("best_rank", "citation", "citation_rank", "score")
+
+    def __init__(self, *, citation: object, citation_rank: int) -> None:
+        self.citation = citation
+        self.citation_rank = citation_rank
+        self.best_rank = citation_rank
+        self.score = 0.0
+
+
+def _pass_weight(hits: int) -> float:
+    """Weight one pass by how selective it was: fewer pages means rarer terms."""
+
+    return 1.0 / (1.0 + math.log(1.0 + hits))
 _MINIMUM_TERM_LENGTH = 3
 _QUERY_TOKEN = re.compile(r"[a-z]+|\d+")
 _QUERY_STOPWORDS = frozenset({
@@ -174,71 +203,324 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
 async def search_pdf_pages(memory: object, question: str, limit: int = 10) -> tuple[object, ...]:
     """Return at most ``limit`` exact citations to distinct evidence pages.
 
-    The scoped Memory owns retrieval, so every returned citation is a real stored
-    entry that ``memory.get`` can resolve. Page coverage grows by running the
-    original question first and then its most specific terms, because a single
-    full-text pass over a long report rarely reaches enough distinct pages.
+    Every returned citation is a real stored entry that ``memory.get`` can
+    resolve, so a caller can回查 the page. Ranking runs over the whole document
+    set read through the public Memory API: a financial report is long enough
+    that only an idf-weighted score over every page, with the query and the page
+    reduced by the same stemmer, reliably surfaces the page that carries the
+    answer. Full-text search is the fallback when the corpus is unavailable.
     """
-
-    from powercontext.builtin.artifacts.memory.models import MemoryCitation
-    from powercontext.builtin.runtime import GetMemoryEntryRequest, SearchMemoryRequest
 
     if not isinstance(question, str) or not question.strip():
         raise ValueError("question must be non-empty text")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("limit must be a positive integer")
 
-    ranked: list[tuple[object, ...]] = []
-    for query in _query_plan(question):
+    ranked = await _rank_by_corpus(memory, question, limit)
+    if ranked is not None and len(ranked) >= limit:
+        return ranked
+    # Full-text search still contributes whenever the corpus ranking could not
+    # fill the answer, so the result never shrinks below what search alone found.
+    searched = await _rank_by_full_text_search(memory, question, limit)
+    if ranked is None:
+        return searched
+    merged = list(ranked)
+    seen = {
+        (
+            citation.memory_ref.artifact_id,
+            citation.memory_ref.revision,
+            citation.entry_id,
+            citation.entry_version_id,
+        )
+        for citation in merged
+    }
+    for citation in searched:
+        if len(merged) >= limit:
+            break
+        identity = (
+            citation.memory_ref.artifact_id,
+            citation.memory_ref.revision,
+            citation.entry_id,
+            citation.entry_version_id,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(citation)
+    return tuple(merged)
+
+
+async def _rank_by_corpus(memory: object, question: str, limit: int) -> tuple[object, ...] | None:
+    """Rank every stored page against the question with an idf-weighted score."""
+
+    corpus = await _pdf_corpus(memory)
+    if corpus is None or not corpus.documents:
+        return None
+    terms = _query_stems(question)
+    if not terms:
+        return None
+    scored = _bm25_page_scores(corpus, terms)
+    if not scored:
+        return None
+    citations: list[object] = []
+    seen: set[tuple[str, int, str, str]] = set()
+    for score, document in scored:
+        if score <= 0.0:
+            break
+        citation = document.citation
+        identity = (
+            citation.memory_ref.artifact_id,
+            citation.memory_ref.revision,
+            citation.entry_id,
+            citation.entry_version_id,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        citations.append(citation)
+        if len(citations) >= limit:
+            break
+    return tuple(citations) if citations else None
+
+
+async def _rank_by_full_text_search(memory: object, question: str, limit: int) -> tuple[object, ...]:
+    """Rank pages through the backend search channels when no corpus is readable."""
+
+    from powercontext.builtin.artifacts.memory.models import MemoryCitation
+    from powercontext.builtin.runtime import GetMemoryEntryRequest, SearchMemoryRequest
+
+    pages: dict[tuple[str, str], _PageCandidate] = {}
+    entry_pages: dict[tuple[str, int, str, str], tuple[tuple[str, str], ...]] = {}
+    lookups = 0
+    for pass_index, query in enumerate(_query_plan(question)):
         try:
-            page = await memory.search(
+            found = await memory.search(
                 SearchMemoryRequest(query=query, mode="fts", limit=_DEFAULT_SEARCH_PAGE_LIMIT)
             )
         except Exception:  # noqa: BLE001 - one unusable query must not lose the others
             continue
-        if page.hits:
-            ranked.append(tuple(page.hits))
-
-    citations: list[MemoryCitation] = []
-    pages: set[tuple[str, str]] = set()
-    entries: set[tuple[str, int, str, str]] = set()
-    depth = 0
-    # Round-robin across passes instead of draining the first one: a long report
-    # rarely hides its evidence page behind a single whole-question match, but a
-    # specific term usually reaches it, so every pass contributes its best page
-    # before any pass contributes its second.
-    while len(citations) < limit and any(depth < len(hits) for hits in ranked):
-        for hits in ranked:
-            if len(citations) >= limit:
-                break
-            if depth >= len(hits):
-                continue
-            hit = hits[depth]
+        hits = tuple(found.hits)[:_DEFAULT_SEARCH_PAGE_HITS]
+        if not hits:
+            continue
+        # A pass that returns few pages carries a rare term, so a page it reaches
+        # is stronger evidence than one reached by a term the whole report
+        # mentions. The original question is the strongest pass of all.
+        weight = _PASS_QUESTION_WEIGHT if pass_index == 0 else _pass_weight(len(hits))
+        for rank, hit in enumerate(hits):
             identity = (
                 hit.memory_ref.artifact_id,
                 hit.memory_ref.revision,
                 hit.entry_id,
                 hit.entry_version_id,
             )
-            if identity in entries:
-                continue
-            entries.add(identity)
-            citation = MemoryCitation(
-                memory_ref=hit.memory_ref,
-                entry_id=hit.entry_id,
-                entry_version_id=hit.entry_version_id,
-            )
-            try:
-                entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
-            except Exception:  # noqa: BLE001 - a stale hit is simply skipped
-                continue
-            sources = {(reference.source_type, reference.source_id) for reference in entry.sources}
-            if not sources or sources & pages:
-                continue
-            pages |= sources
-            citations.append(citation)
-        depth += 1
+            candidate_keys = entry_pages.get(identity)
+            if candidate_keys is None:
+                if lookups >= _MAX_ENTRY_LOOKUPS:
+                    continue
+                lookups += 1
+                citation = MemoryCitation(
+                    memory_ref=hit.memory_ref,
+                    entry_id=hit.entry_id,
+                    entry_version_id=hit.entry_version_id,
+                )
+                try:
+                    entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
+                except Exception:  # noqa: BLE001 - a stale hit is simply skipped
+                    continue
+                candidate_keys = tuple(
+                    (reference.source_type, reference.source_id) for reference in entry.sources
+                )
+                if not candidate_keys:
+                    continue
+                entry_pages[identity] = candidate_keys
+                for key in candidate_keys:
+                    if key not in pages:
+                        pages[key] = _PageCandidate(citation=citation, citation_rank=rank)
+            for key in candidate_keys:
+                page = pages.get(key)
+                if page is None:
+                    continue
+                page.score += weight
+                if rank < page.best_rank:
+                    page.best_rank = rank
+    # Rank by how many question passes support a page before how early any single
+    # pass placed it: the evidence page of a long report usually shares several
+    # terms with the question, and a single rare-term hit is often a coincidence.
+    ordered = sorted(
+        pages.values(),
+        key=lambda page: (-page.score, page.best_rank, page.citation_rank),
+    )
+    citations: list[MemoryCitation] = []
+    seen: set[tuple[str, int, str, str]] = set()
+    for page in ordered:
+        citation = page.citation
+        identity = (
+            citation.memory_ref.artifact_id,
+            citation.memory_ref.revision,
+            citation.entry_id,
+            citation.entry_version_id,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        citations.append(citation)
+        if len(citations) >= limit:
+            break
     return tuple(citations)
+
+
+class _CorpusDocument:
+    """One stored Memory entry reduced to stemmed term frequencies."""
+
+    __slots__ = ("citation", "length", "page_keys", "terms")
+
+    def __init__(self, *, citation: object, page_keys: tuple[tuple[str, str], ...], terms: object) -> None:
+        self.citation = citation
+        self.page_keys = page_keys
+        self.terms = terms
+        self.length = sum(terms.values())
+
+
+class _PdfCorpus:
+    """Every stored entry of one scoped Memory, tokenised once."""
+
+    __slots__ = ("average_length", "documents", "frequency")
+
+    def __init__(
+        self,
+        documents: list[_CorpusDocument],
+        frequency: dict[str, int],
+        average_length: float,
+    ) -> None:
+        self.documents = documents
+        self.frequency = frequency
+        self.average_length = average_length
+
+
+async def _pdf_corpus(memory: object) -> _PdfCorpus | None:
+    """Return the tokenised document set of one scoped Memory, building it once."""
+
+    try:
+        cached = _CORPUS_CACHE.get(memory)
+    except TypeError:
+        return await _build_corpus(memory)
+    if cached is not None:
+        return cached
+    corpus = await _build_corpus(memory)
+    if corpus is not None:
+        try:
+            _CORPUS_CACHE[memory] = corpus
+        except TypeError:
+            pass
+    return corpus
+
+
+async def _build_corpus(memory: object) -> _PdfCorpus | None:
+    try:
+        page = await memory.list()
+    except Exception:  # noqa: BLE001 - retrieval must still work without a full read
+        return None
+    records = tuple(getattr(page, "entries", ()) or ())
+    if not records or len(records) > _MAX_CORPUS_ENTRIES:
+        return None
+    documents: list[_CorpusDocument] = []
+    frequency: dict[str, int] = {}
+    total = 0
+    for record in records:
+        entry = getattr(record, "entry", None)
+        text = getattr(entry, "text", None)
+        if not isinstance(text, str) or not text:
+            continue
+        page_keys = tuple((reference.source_type, reference.source_id) for reference in entry.sources)
+        if not page_keys:
+            continue
+        terms = Counter()
+        for token in _QUERY_TOKEN.findall(text.lower()):
+            terms[_stem(token)] += 1
+        if not terms:
+            continue
+        document = _CorpusDocument(citation=record.citation, page_keys=page_keys, terms=terms)
+        documents.append(document)
+        total += document.length
+        for term in terms:
+            frequency[term] = frequency.get(term, 0) + 1
+    if not documents:
+        return None
+    return _PdfCorpus(documents, frequency, total / len(documents))
+
+
+def _query_stems(question: str) -> tuple[str, ...]:
+    """Return the question's content terms reduced by the corpus stemmer."""
+
+    stems: list[str] = []
+    for token in _QUERY_TOKEN.findall(question.lower()):
+        if len(token) < _MINIMUM_TERM_LENGTH or token in _QUERY_STOPWORDS:
+            continue
+        stem = _stem(token)
+        if stem and stem not in stems:
+            stems.append(stem)
+    return tuple(stems)
+
+
+def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[float, _CorpusDocument]]:
+    """Score every page with BM25 and keep each page's best entry."""
+
+    count = len(corpus.documents)
+    average = corpus.average_length or 1.0
+    idf: dict[str, float] = {}
+    for term in terms:
+        document_frequency = corpus.frequency.get(term, 0)
+        idf[term] = math.log(1.0 + (count - document_frequency + 0.5) / (document_frequency + 0.5))
+    best: dict[tuple[str, str], tuple[float, _CorpusDocument]] = {}
+    for document in corpus.documents:
+        score = 0.0
+        for term in terms:
+            occurrences = document.terms.get(term, 0)
+            if not occurrences:
+                continue
+            denominator = occurrences + _BM25_K1 * (
+                1.0 - _BM25_B + _BM25_B * document.length / average
+            )
+            score += idf[term] * occurrences * (_BM25_K1 + 1.0) / denominator
+        if score <= 0.0:
+            continue
+        for key in document.page_keys:
+            current = best.get(key)
+            if current is None or score > current[0]:
+                best[key] = (score, document)
+    return sorted(best.values(), key=lambda item: -item[0])
+
+
+def _stem(token: str) -> str:
+    """Reduce one English token to a stable surface form.
+
+    The stored page text is analysed without stemming, so the question and the
+    page are reduced here with the same rules instead: ``geographies`` and
+    ``geography`` both become ``geography``, ``operates`` and ``operating`` both
+    become ``operat``.
+    """
+
+    if len(token) <= _MINIMUM_TERM_LENGTH:
+        return token
+    if token.endswith("ies") and len(token) > 4:
+        token = token[:-3] + "y"
+    elif token.endswith("es") and len(token) > 4:
+        token = token[:-2]
+    elif token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        token = token[:-1]
+    if token.endswith("ing") and len(token) > 6:
+        token = token[:-3]
+    elif token.endswith("ed") and len(token) > 5:
+        token = token[:-2]
+    if token.endswith("ment") and len(token) > 7:
+        token = token[:-4]
+    elif token.endswith("ly") and len(token) > 5:
+        token = token[:-2]
+    if token.endswith("e") and len(token) > 4:
+        token = token[:-1]
+    if len(token) > 4 and token[-1] == token[-2] and token[-1] not in "aeiouls":
+        token = token[:-1]
+    return token
 
 
 def _query_plan(question: str) -> tuple[str, ...]:
