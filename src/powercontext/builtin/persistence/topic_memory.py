@@ -192,8 +192,12 @@ class TopicMemoryRepository:
                     )
                     .where(
                         ARTIFACT_HEADS_TABLE.c.family == TopicMemory.family,
+                        # A head without any active projection is a Topic Revision whose
+                        # supporting evidence was withdrawn: its immutable content stays
+                        # readable for audit while it is no longer served. Every active
+                        # projection must still point at the head and keep its chunks.
+                        TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.revision.is_not(None),
                         or_(
-                            TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.revision.is_(None),
                             TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.revision != ARTIFACT_HEADS_TABLE.c.revision,
                             chunk_count == 0,
                         ),
@@ -563,6 +567,94 @@ class TopicMemoryRepository:
             ],
         )
         return published_at
+
+    async def withdraw(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        ref: ArtifactRef,
+        /,
+    ) -> None:
+        """Stop serving one Topic Revision while its immutable content stays readable."""
+
+        if ref.family != TopicMemory.family:
+            raise InvalidRepositoryArgumentError("artifact_ref", "must reference topic-memory")
+        await self._drop_active_head(connection, scope_id, ref.artifact_id)
+        remove = getattr(self.index, "remove", None)
+        if remove is not None:
+            await remove(connection, scope_id, ref)
+
+    async def restore(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        ref: ArtifactRef,
+        /,
+    ) -> None:
+        """Serve one withdrawn Topic Revision again from its immutable content."""
+
+        if ref.family != TopicMemory.family:
+            raise InvalidRepositoryArgumentError("artifact_ref", "must reference topic-memory")
+        topic = await self.artifacts.get(connection, scope_id, ref)
+        if not isinstance(topic, TopicMemory):
+            raise TopicMemoryStorageInvariantError("artifact-type", ref)
+        await self._drop_active_head(connection, scope_id, ref.artifact_id)
+        await connection.execute(
+            insert(TOPIC_MEMORY_ACTIVE_TOPICS_TABLE).values(
+                scope_id=scope_id,
+                family=TopicMemory.family,
+                artifact_id=ref.artifact_id,
+                revision=ref.revision,
+                title=topic.content.title,
+                summary=topic.content.summary,
+                searchable_text=analyze_text(f"{topic.content.title}\n{topic.content.summary}"),
+                source_count=len(topic.lineage.sources),
+            )
+        )
+        await connection.execute(
+            insert(TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE),
+            [
+                {
+                    "scope_id": scope_id,
+                    "family": TopicMemory.family,
+                    "artifact_id": ref.artifact_id,
+                    "revision": ref.revision,
+                    "chunk_ordinal": chunk.ordinal,
+                    "start_offset": chunk.start_offset,
+                    "end_offset": chunk.end_offset,
+                    "chunk_text": chunk.text,
+                    "searchable_text": analyze_text(chunk.text),
+                    "policy_version": chunk.policy_version,
+                }
+                for chunk in chunk_topic_memory_detail(topic.content.detail)
+            ],
+        )
+        projection = TopicMemoryProjection(
+            content=topic.content,
+            chunks=chunk_topic_memory_detail(topic.content.detail),
+            topic_searchable_text=analyze_text(f"{topic.content.title}\n{topic.content.summary}"),
+        )
+        await self.index.replace(connection, scope_id, ref, projection)
+
+    async def _drop_active_head(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        artifact_id: str,
+        /,
+    ) -> None:
+        await connection.execute(
+            delete(TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE).where(
+                TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE.c.scope_id == scope_id,
+                TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE.c.artifact_id == artifact_id,
+            )
+        )
+        await connection.execute(
+            delete(TOPIC_MEMORY_ACTIVE_TOPICS_TABLE).where(
+                TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.scope_id == scope_id,
+                TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.artifact_id == artifact_id,
+            )
+        )
 
     def _validate_projection(
         self,

@@ -152,6 +152,7 @@ from powercontext.builtin.persistence.recurrence import RecurrenceRepository
 from powercontext.builtin.persistence.skill_packages import SkillPackageRepository
 from powercontext.builtin.persistence.skill_publications import SkillPublicationRepository
 from powercontext.builtin.persistence.source_definitions import SourceDefinitionManifestRepository
+from powercontext.builtin.persistence.source_lifecycle import SourceLifecycleStore
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
 from powercontext.builtin.persistence.statistics import StatisticsRepository
 from powercontext.builtin.persistence.supervision import (
@@ -1695,6 +1696,40 @@ class _RelationalTriggers:
                 self._services.scope_id,
             )
         return (0 if state is None else state.cursor.sequence), high_watermark
+
+    async def lifecycle_load(self) -> dict[str, Any] | None:
+        """Return this scope's durable Source lifecycle graph, if one exists."""
+
+        store = SourceLifecycleStore()
+        async with self._services.database.transaction() as connection:
+            stored = await store.load(connection, self._services.scope_id)
+        return None if stored is None else stored[0]
+
+    async def lifecycle_save(self, payload: dict[str, Any], /) -> None:
+        """Persist this scope's Source lifecycle graph."""
+
+        store = SourceLifecycleStore()
+        async with self._services.database.transaction() as connection:
+            await store.save(connection, self._services.scope_id, payload)
+
+    async def lifecycle_withdraw_topic(self, artifact_id: str, revision: int, /) -> None:
+        """Stop serving one Topic Revision whose evidence was withdrawn."""
+
+        await self._topic_lifecycle(artifact_id, revision, active=False)
+
+    async def lifecycle_restore_topic(self, artifact_id: str, revision: int, /) -> None:
+        """Serve one previously withdrawn Topic Revision again."""
+
+        await self._topic_lifecycle(artifact_id, revision, active=True)
+
+    async def _topic_lifecycle(self, artifact_id: str, revision: int, /, *, active: bool) -> None:
+        reference = ArtifactRef(family=TopicMemory.family, artifact_id=artifact_id, revision=revision)
+        async with self._services.database.transaction() as connection:
+            topics = self._services.repositories.topic_memories
+            if active:
+                await topics.restore(connection, self._services.scope_id, reference)
+            else:
+                await topics.withdraw(connection, self._services.scope_id, reference)
 
     @prompt_operation("memory.extract")
     async def flush(
