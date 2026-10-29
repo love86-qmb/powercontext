@@ -30,6 +30,7 @@ import math
 import re
 import weakref
 from collections import Counter
+from itertools import pairwise
 from urllib.parse import quote
 
 from pydantic import BaseModel
@@ -53,11 +54,36 @@ _MAX_CORPUS_ENTRIES = 20000
 _BM25_K1 = 1.2
 _BM25_B = 0.75
 _HEADING_WEIGHT = 12.0
+_PHRASE_WEIGHT = 4.0
+_STATEMENT_PAGE_RESERVE = 10
 _MINIMUM_HEADING_LENGTH = 4
 _MAXIMUM_HEADING_LENGTH = 90
 _MINIMUM_HEADING_ALPHA_RATIO = 0.7
 _RUNNING_HEADER = "table of contents"
 _HEADING_PREFIXES = ("item ", "note ", "part ", "consolidated", "our ", "recently issued", "statement")
+_FINANCIAL_STATEMENT = re.compile(
+    r"consolidated (statements?|balance sheets?)"
+    r"|statements? of (income|cash flows?|comprehensive|equity|financial position)"
+    r"|balance sheets?"
+)
+_QUANTITATIVE_QUESTION = re.compile(
+    r"what is the|how much|ratio|margin|amount|total|percent|increase|decrease|change|"
+    r"fy ?20|usd|million|billion|cost|revenue|income|cash flow|debt|asset|liabilit|\d{4}"
+)
+_QUERY_EXPANSIONS = (
+    (
+        re.compile(r"\b(legal|lawsuit|litigation|battle|battles)\b"),
+        "litigation proceeding proceedings lawsuit lawsuits claim claims dispute disputes investigation investigations",
+    ),
+    (
+        re.compile(r"\boperating margin\b"),
+        "operating income operating expenses results of operations cost revenue sales",
+    ),
+    (
+        re.compile(r"\b(customer|customers)\b"),
+        "client clients buyer buyers government airline airlines contract contracts",
+    ),
+)
 
 _CORPUS_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -199,7 +225,7 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
         raise
     except (PdfReadError, OSError, KeyError, TypeError, AttributeError, IndexError) as error:
         raise ValueError(f"PDF document could not be fully parsed: {error}") from error
-    except Exception as error:  # noqa: BLE001 - any pypdf failure means the input is unusable
+    except Exception as error:
         raise ValueError(f"PDF document could not be fully parsed: {error}") from error
     if not pages:
         raise ValueError("PDF document must contain at least one physical page")
@@ -268,11 +294,15 @@ async def _rank_by_corpus(memory: object, question: str, limit: int) -> tuple[ob
     scored = _bm25_page_scores(corpus, terms)
     if not scored:
         return None
+    if _QUANTITATIVE_QUESTION.search(question.lower()):
+        statements = [item for item in scored if item[1].statement][:_STATEMENT_PAGE_RESERVE]
+        statement_ids = {id(document) for _score, document in statements}
+        scored = statements + [item for item in scored if id(item[1]) not in statement_ids]
     citations: list[object] = []
     seen: set[tuple[str, int, str, str]] = set()
     for score, document in scored:
         if score <= 0.0:
-            break
+            continue
         citation = document.citation
         identity = (
             citation.memory_ref.artifact_id,
@@ -303,7 +333,7 @@ async def _rank_by_full_text_search(memory: object, question: str, limit: int) -
             found = await memory.search(
                 SearchMemoryRequest(query=query, mode="fts", limit=_DEFAULT_SEARCH_PAGE_LIMIT)
             )
-        except Exception:  # noqa: BLE001 - one unusable query must not lose the others
+        except Exception:
             continue
         hits = tuple(found.hits)[:_DEFAULT_SEARCH_PAGE_HITS]
         if not hits:
@@ -331,7 +361,7 @@ async def _rank_by_full_text_search(memory: object, question: str, limit: int) -
                 )
                 try:
                     entry = (await memory.get(GetMemoryEntryRequest(citation=citation))).entry
-                except Exception:  # noqa: BLE001 - a stale hit is simply skipped
+                except Exception:
                     continue
                 candidate_keys = tuple(
                     (reference.source_type, reference.source_id) for reference in entry.sources
@@ -376,9 +406,9 @@ async def _rank_by_full_text_search(memory: object, question: str, limit: int) -
 
 
 class _CorpusDocument:
-    """One stored Memory entry reduced to stemmed body and heading terms."""
+    """One stored Memory entry reduced to lexical and structural signals."""
 
-    __slots__ = ("citation", "headings", "length", "page_keys", "terms")
+    __slots__ = ("bigrams", "citation", "headings", "length", "page_keys", "statement", "terms")
 
     def __init__(
         self,
@@ -387,11 +417,15 @@ class _CorpusDocument:
         page_keys: tuple[tuple[str, str], ...],
         terms: object,
         headings: object,
+        bigrams: frozenset[tuple[str, str]],
+        statement: bool,
     ) -> None:
         self.citation = citation
         self.page_keys = page_keys
         self.terms = terms
         self.headings = headings
+        self.bigrams = bigrams
+        self.statement = statement
         self.length = sum(terms.values())
 
 
@@ -432,7 +466,7 @@ async def _pdf_corpus(memory: object) -> _PdfCorpus | None:
 async def _build_corpus(memory: object) -> _PdfCorpus | None:
     try:
         page = await memory.list()
-    except Exception:  # noqa: BLE001 - retrieval must still work without a full read
+    except Exception:
         return None
     records = tuple(getattr(page, "entries", ()) or ())
     if not records or len(records) > _MAX_CORPUS_ENTRIES:
@@ -462,6 +496,8 @@ async def _build_corpus(memory: object) -> _PdfCorpus | None:
             page_keys=page_keys,
             terms=terms,
             headings=headings,
+            bigrams=_stem_bigrams(text),
+            statement=_is_financial_statement(text),
         )
         documents.append(document)
         total += document.length
@@ -475,9 +511,14 @@ async def _build_corpus(memory: object) -> _PdfCorpus | None:
 def _query_stems(question: str) -> tuple[str, ...]:
     """Return the question's content terms reduced by the corpus stemmer."""
 
+    expanded = question
+    lowered = question.lower()
+    for pattern, addition in _QUERY_EXPANSIONS:
+        if pattern.search(lowered):
+            expanded += " " + addition
     stems: list[str] = []
-    for token in _QUERY_TOKEN.findall(question.lower()):
-        if len(token) < _MINIMUM_TERM_LENGTH or token in _QUERY_STOPWORDS:
+    for token in _QUERY_TOKEN.findall(expanded.lower()):
+        if len(token) < _MINIMUM_TERM_LENGTH:
             continue
         stem = _stem(token)
         if stem and stem not in stems:
@@ -488,14 +529,15 @@ def _query_stems(question: str) -> tuple[str, ...]:
 def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[float, _CorpusDocument]]:
     """Score every page and keep each page's best entry.
 
-    The score adds a standing bonus for every question term that appears in one of
-    the page's section headings. A filing names the section that answers a
-    question — ``Item 3. Legal Proceedings``, ``Consolidated Statement of Cash
-    Flows``, ``Note 3 — Restructuring and Impairment Charges`` — while the page
-    body itself is often a table of numbers or a list of place names that shares
-    almost no vocabulary with the question. The bonus is added *after* BM25 rather
-    than folded into the term frequencies, because length normalisation dilutes it
-    otherwise.
+    Three signals are added, because no single one covers a filing: saturated
+    whole-page BM25, adjacent query phrases, and a standing bonus for every
+    question term named in one of the page's section headings. A filing names
+    the section that answers a question — ``Item 3. Legal Proceedings``,
+    ``Consolidated Statement of Cash Flows``, ``Note 3 — Restructuring and
+    Impairment Charges`` — while the page body is often a table of numbers or a
+    list of place names that shares almost no vocabulary with the question. The
+    bonus is added *after* the term scores rather than folded into the term
+    frequencies, because length normalisation dilutes it otherwise.
     """
 
     count = len(corpus.documents)
@@ -511,10 +553,13 @@ def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[
             occurrences = document.terms.get(term, 0)
             if not occurrences:
                 continue
-            denominator = occurrences + _BM25_K1 * (
+            saturated = 1.0 + math.log(occurrences)
+            denominator = saturated + _BM25_K1 * (
                 1.0 - _BM25_B + _BM25_B * document.length / average
             )
-            score += idf[term] * occurrences * (_BM25_K1 + 1.0) / denominator
+            score += idf[term] * saturated * (_BM25_K1 + 1.0) / denominator
+        query_bigrams = set(pairwise(terms))
+        score += _PHRASE_WEIGHT * len(query_bigrams & document.bigrams)
         heading_terms = [term for term in terms if document.headings.get(term)]
         if heading_terms:
             score += _HEADING_WEIGHT * sum(idf[term] for term in heading_terms)
@@ -525,6 +570,21 @@ def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[
             if current is None or score > current[0]:
                 best[key] = (score, document)
     return sorted(best.values(), key=lambda item: -item[0])
+
+
+def _stem_bigrams(text: str) -> frozenset[tuple[str, str]]:
+    """Return adjacent stem pairs for phrase-aware page ranking."""
+
+    tokens = [_stem(token) for token in _QUERY_TOKEN.findall(text.lower()) if len(token) >= _MINIMUM_TERM_LENGTH]
+    return frozenset(pairwise(tokens))
+
+
+def _is_financial_statement(text: str) -> bool:
+    """Identify primary financial-statement pages from headings and the page lead."""
+
+    headings = " ".join(_heading_lines(text)).lower()
+    lead = " ".join(text[:400].lower().split())
+    return bool(_FINANCIAL_STATEMENT.search(headings) or _FINANCIAL_STATEMENT.search(lead))
 
 
 def _heading_lines(text: str) -> list[str]:
