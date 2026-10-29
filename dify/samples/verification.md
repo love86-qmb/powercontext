@@ -90,6 +90,21 @@ curl -X POST http://127.0.0.1:8077/memory/reset \
 - 换 `user_id` 之后检索结果与前面那个玩家完全隔离；
 - 每一轮 `new_memory` 都是模型把玩家这句话压成的一条事实，写回 seekdb 后**下一轮立即能检索到**。
 
+### 5.1.1 运行截图（`samples/screenshots/`）
+
+Dify「测试运行 → 结果」面板的原图，按执行顺序编号，可直接对照上表：
+
+| 文件 | 场景 | 关键证据 |
+|---|---|---|
+| `screenshots/01-player001-turn1-first-meeting.png` | player-001 第 1 轮 | `"memories": []`、`count: 0`、`total: 0`，`memory_total` 变 1 |
+| `screenshots/02-player001-turn2-recalls-cup.png` | player-001 第 2 轮 | 命中 `玩家昨天摔了这里的杯子。`（相关度 0.11），老板回话里带出「昨天摔了我这儿一个杯子」 |
+| `screenshots/03-player001-turn3-recalls-two.png` | player-001 第 3 轮 | `count: 2`，同时翻出「杯子」和「稽查员」 |
+| `screenshots/04-player002-turn1-first-meeting.png` | **换玩家** player-002 第 1 轮 | `"memories": []`、`count: 0` —— 看不到 player-001 的任何旧账 |
+| `screenshots/05-player002-turn2-recalls-fish.png` | player-002 第 2 轮 | 只命中 player-002 自己的记忆 |
+| `screenshots/06-player002-turn3-recalls-two.png` | player-002 第 3 轮 | `count: 2`，两条都是这个玩家自己的 |
+
+> 截图里 `memories` 元素上的 `user_id` 字段就是隔离的证据：01–03 全是 `player-001`，04–06 全是 `player-002`。
+
 ### 5.2 不用 Dify 也能验证链路（`tools/demo_client.py`）
 
 `tools/demo_client.py` 调的就是 Dify 那两个 HTTP 节点的同一套接口，把 LLM 换成固定文案，
