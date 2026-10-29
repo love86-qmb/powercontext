@@ -1,0 +1,330 @@
+app:
+  description: '一个会记仇的酒馆老板 NPC。你说的每句话都会被写进 seekdb，下一次见面他会主动翻旧账——
+    玩得越久，他记得越清楚。基于 Dify Workflow + seekdb（pyseekdb 嵌入式）语义记忆检索。'
+  icon: 🍺
+  icon_background: '#FFEAD5'
+  mode: workflow
+  name: 布鲁姆酒馆·记仇的老板
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.1.5
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        sourceType: start
+        targetType: http-request
+      id: edge-start-recall
+      source: start_node
+      sourceHandle: source
+      target: recall_http
+      targetHandle: target
+    - data:
+        isInIteration: false
+        sourceType: http-request
+        targetType: llm
+      id: edge-recall-reply
+      source: recall_http
+      sourceHandle: source
+      target: reply_llm
+      targetHandle: target
+    - data:
+        isInIteration: false
+        sourceType: llm
+        targetType: llm
+      id: edge-reply-distill
+      source: reply_llm
+      sourceHandle: source
+      target: distill_llm
+      targetHandle: target
+    - data:
+        isInIteration: false
+        sourceType: llm
+        targetType: http-request
+      id: edge-distill-remember
+      source: distill_llm
+      sourceHandle: source
+      target: remember_http
+      targetHandle: target
+    - data:
+        isInIteration: false
+        sourceType: http-request
+        targetType: end
+      id: edge-remember-end
+      source: remember_http
+      sourceHandle: source
+      target: end_node
+      targetHandle: target
+    nodes:
+    - data:
+        desc: 玩家标识（换一个 ID 就是另一个玩家，记忆互不可见）与这一轮说的话
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - label: 玩家 ID
+          max_length: 64
+          options: []
+          required: true
+          type: text-input
+          variable: user_id
+        - label: 你对老板说
+          max_length: 512
+          options: []
+          required: true
+          type: paragraph
+          variable: message
+      height: 160
+      id: start_node
+      position:
+        x: 60
+        y: 280
+      positionAbsolute:
+        x: 60
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"user_id":"{{#start_node.user_id#}}","query":"{{#start_node.message#}}","k":3}'
+          type: json
+        desc: 去 seekdb 里捞这个玩家最相关的旧账（不存在的第一次见面会返回空记忆）
+        headers: 'Content-Type:application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 200
+        selected: false
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: 1. 检索旧账（seekdb）
+        type: http-request
+        url: http://127.0.0.1:8077/memory/recall
+        variables:
+        - variable: memories_text
+          value_selector:
+          - body
+          - memories_text
+        - variable: count
+          value_selector:
+          - body
+          - count
+        - variable: total
+          value_selector:
+          - body
+          - total
+      height: 108
+      id: recall_http
+      position:
+        x: 360
+        y: 260
+      positionAbsolute:
+        x: 360
+        y: 260
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 老板布鲁姆的人格与规矩：只翻检索到的旧账，绝不凭空编造
+        model:
+          completion_params:
+            temperature: 0.8
+          mode: chat
+          name: gpt-4o-mini
+          provider: openai
+        prompt_template:
+        - role: system
+          text: |
+            你是「布鲁姆」，一家开在旧港口的小酒馆老板。你记性极好，而且**记仇**。
+            你说话粗声粗气、爱翻旧账、偶尔阴阳怪气，但本质不坏，会照顾熟客。
+
+            这一轮你从记忆库（seekdb）里想起来的事：
+            {{#recall_http.memories_text#}}
+
+            规矩（必须遵守）：
+            1. 只能依据上面列出的旧账来翻账。列表是空的，就当作第一次见面，不要编造任何往事。
+            2. 提到旧账时要具体（哪一轮、做了什么），但用口语说出来，不要念编号。
+            3. 回答控制在 120 字以内，2–4 句话，像个活人，别写成分点说明。
+            4. 玩家这一轮说的话里如果有值得记住的事（比如自称的身份、许下的承诺、干的坏事），
+               用一句话在末尾带出来，作为下一轮的伏笔。
+          variable_selector: []
+        selected: false
+        title: 2. 老板回话（LLM）
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 98
+      id: reply_llm
+      position:
+        x: 660
+        y: 280
+      positionAbsolute:
+        x: 660
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 把这一轮压成一句可检索的记忆（谁、做了什么、老板怎么回的）
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: gpt-4o-mini
+          provider: openai
+        prompt_template:
+        - role: system
+          text: |
+            你是记忆压缩器。阅读玩家这一轮说的话，输出**一句**中文事实记忆，
+            格式：玩家<做了什么 / 说了什么 / 承诺了什么>。
+            要求：≤40 字；只保留以后可能被翻旧账的具体事实（身份、承诺、坏事、偏好、时间地点）；
+            不要把老板的反应写进去（反应由系统另存）；不要引号，不要解释，不要任何前缀。
+          variable_selector: []
+        selected: false
+        title: 3. 压缩成一条记忆
+        type: llm
+        variables:
+        - value_selector:
+          - start_node
+          - message
+          variable: player_message
+        - value_selector:
+          - reply_llm
+          - text
+          variable: boss_reply
+        vision:
+          enabled: false
+      height: 98
+      id: distill_llm
+      position:
+        x: 960
+        y: 280
+      positionAbsolute:
+        x: 960
+        y: 280
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"user_id":"{{#start_node.user_id#}}","text":"{{#distill_llm.text#}}","reply":"{{#reply_llm.text#}}"}'
+          type: json
+        desc: 把这一轮写回 seekdb，下一轮（乃至下一次会话）就能被检索到
+        headers: 'Content-Type:application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 200
+        selected: false
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: 4. 记住这一轮（seekdb）
+        type: http-request
+        url: http://127.0.0.1:8077/memory/remember
+        variables:
+        - variable: turn
+          value_selector:
+          - body
+          - turn
+        - variable: total
+          value_selector:
+          - body
+          - total
+      height: 108
+      id: remember_http
+      position:
+        x: 1260
+        y: 260
+      positionAbsolute:
+        x: 1260
+        y: 260
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: 回复 + 记忆证据（评审可据此核对 seekdb 是否真的参与了这一轮）
+        outputs:
+        - value_selector:
+          - reply_llm
+          - text
+          variable: reply
+        - value_selector:
+          - recall_http
+          - memories_text
+          variable: recalled
+        - value_selector:
+          - distill_llm
+          - text
+          variable: new_memory
+        - value_selector:
+          - remember_http
+          - total
+          variable: memory_total
+        selected: false
+        title: 结束
+        type: end
+      height: 130
+      id: end_node
+      position:
+        x: 1560
+        y: 300
+      positionAbsolute:
+        x: 1560
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+  rag_pipeline_variables: []

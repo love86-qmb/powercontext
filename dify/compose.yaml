@@ -1,0 +1,34 @@
+services:
+  seekdb:
+    image: oceanbase/seekdb:latest
+    container_name: tavern-seekdb
+    ports:
+      - "2881:2881"
+      - "2886:2886"
+    volumes:
+      - seekdb-data:/var/lib/oceanbase
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'echo > /dev/tcp/127.0.0.1/2881'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  bridge:
+    build: ./bridge
+    container_name: tavern-bridge
+    depends_on:
+      seekdb:
+        condition: service_healthy
+    environment:
+      SEEKDB_HOST: seekdb
+      SEEKDB_PORT: "2881"
+      SEEKDB_USER: root
+      SEEKDB_PASSWORD: ""
+      SEEKDB_DB: test
+    ports:
+      - "8077:8077"
+    restart: unless-stopped
+
+volumes:
+  seekdb-data:
