@@ -130,18 +130,7 @@ workflow:
         type: http-request
         url: http://127.0.0.1:8077/memory/recall
         variables:
-        - variable: memories_text
-          value_selector:
-          - body
-          - memories_text
-        - variable: count
-          value_selector:
-          - body
-          - count
-        - variable: total
-          value_selector:
-          - body
-          - total
+
       height: 108
       id: recall_http
       position:
@@ -173,7 +162,7 @@ workflow:
             你说话粗声粗气、爱翻旧账、偶尔阴阳怪气，但本质不坏，会照顾熟客。
 
             这一轮你从记忆库（seekdb）里想起来的事：
-            {{#recall_http.memories_text#}}
+            {{#recall_http.body#}}
 
             规矩（必须遵守）：
             1. 只能依据上面列出的旧账来翻账。列表是空的，就当作第一次见面，不要编造任何往事。
@@ -220,18 +209,14 @@ workflow:
             要求：≤40 字；只保留以后可能被翻旧账的具体事实（身份、承诺、坏事、偏好、时间地点）；
             不要把老板的反应写进去（反应由系统另存）；不要引号，不要解释，不要任何前缀。
           variable_selector: []
+        - role: user
+          text: |
+            玩家这一轮说的是：{{#start_node.message#}}
+          variable_selector: []
         selected: false
         title: 3. 压缩成一条记忆
         type: llm
-        variables:
-        - value_selector:
-          - start_node
-          - message
-          variable: player_message
-        - value_selector:
-          - reply_llm
-          - text
-          variable: boss_reply
+        variables: []
         vision:
           enabled: false
       height: 98
@@ -271,14 +256,7 @@ workflow:
         type: http-request
         url: http://127.0.0.1:8077/memory/remember
         variables:
-        - variable: turn
-          value_selector:
-          - body
-          - turn
-        - variable: total
-          value_selector:
-          - body
-          - total
+
       height: 108
       id: remember_http
       position:
@@ -301,7 +279,7 @@ workflow:
           variable: reply
         - value_selector:
           - recall_http
-          - memories_text
+          - body
           variable: recalled
         - value_selector:
           - distill_llm
@@ -309,7 +287,7 @@ workflow:
           variable: new_memory
         - value_selector:
           - remember_http
-          - total
+          - body
           variable: memory_total
         selected: false
         title: 结束

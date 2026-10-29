@@ -150,7 +150,29 @@ SHOW TABLES LIKE 'c$v2$%';                               -- 记忆数据表：_i
 SELECT _id, LEFT(document,34), JSON_EXTRACT(metadata,'$.turn') FROM `c$v2$<collection_id>` LIMIT 5;
 ```
 
-## 7. 已知限制
+## 7. 自托管 Dify（1.18）踩过的坑 —— 复现时按这四条排
+
+这四条都是本机实测踩出来的，官方文档里查不到：
+
+1. **HTTP 节点拿不到自定义变量**：Dify 1.18 的 HTTP Request 节点把响应放在 `body` 里，
+   而且它是**字符串**（不是解析后的对象）。自定义 `variables`（`value_selector: [body, xxx]`）会报
+   `Variable #node.xxx# not found`。本仓库的 DSL 已改成直接用 `{{#recall_http.body#}}`，
+   并在提示词里说明「这是一段 JSON」。
+2. **调用内网 / 宿主机服务被 SSRF 拦**：报
+   `Access to 'http://host.docker.internal:8077/...' was blocked by SSRF protection`。
+   解法：`docker/.env` 里加 `SSRF_PROXY_ALLOW_PRIVATE_IPS=192.168.65.0/24,172.21.0.0/16`，
+   然后 **`docker compose up -d --force-recreate ssrf_proxy api worker`**——
+   只重启 api 不够，拦截发生在 squid 那一侧。
+3. **插件装完，模型供应商列表仍是空的**：provider 清单缓存在 Redis 里，
+   `docker exec <redis容器> redis-cli FLUSHALL` 之后刷新页面就出来了。
+4. **OpenAI-API-compatible 的凭据是「模型级」的**：调
+   `/model-providers/{provider}/credentials` 会报 `does not have provider_credential_schema`，
+   要用 `/model-providers/{provider}/models/credentials`，字段名是 **`endpoint_url`**（不是 `base_url`），
+   并带上 `mode / context_size / max_tokens_to_sample / function_calling_type / stream_mode`。
+
+> 第 1 条建议在任何 Dify 版本上都这么写：直接用 `body`，最省事，也不会被版本细节坑到。
+
+## 8. 已知限制
 
 1. **单轮一句话 = 一轮游戏**：Workflow 无内置会话状态，靠 `user_id` 串起来；想要真正的连续对话，
    可改用 Chatflow 版本（DSL 里的四个节点可原样保留，把 start 换成会话变量即可）。
@@ -160,7 +182,7 @@ SELECT _id, LEFT(document,34), JSON_EXTRACT(metadata,'$.turn') FROM `c$v2$<colle
    换成真实句向量模型会明显变好。
 4. seekdb 需要持久化目录；容器删除即丢记忆（compose 里已挂 volume）。
 
-## 8. 数据与来源声明
+## 9. 数据与来源声明
 
 - 记忆内容全部来自玩家输入（运行时产生），仓库内不含任何预置数据、不含任何 API Key。
 - 玩法、人设、prompt 均为本次参赛自写；未复用公开 DSL。
