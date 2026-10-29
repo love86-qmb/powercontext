@@ -67,8 +67,8 @@ _FINANCIAL_STATEMENT = re.compile(
     r"|balance sheets?"
 )
 _QUANTITATIVE_QUESTION = re.compile(
-    r"what is the|how much|ratio|margin|amount|total|percent|increase|decrease|change|"
-    r"fy ?20|usd|million|billion|cost|revenue|income|cash flow|debt|asset|liabilit|\d{4}"
+    r"balance sheet|cash flow|statement|p&l|ebitda|capital[- ]intensive|quick ratio|"
+    r"days payable|\bdpo\b|line items|financial metric"
 )
 _QUERY_EXPANSIONS = (
     (
@@ -82,6 +82,10 @@ _QUERY_EXPANSIONS = (
     (
         re.compile(r"\b(customer|customers)\b"),
         "client clients buyer buyers government airline airlines contract contracts",
+    ),
+    (
+        re.compile(r"\b(cyclical|cyclicality|cycle)\b"),
+        "demand downturn economy economic industry cycles",
     ),
 )
 
