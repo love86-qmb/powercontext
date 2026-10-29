@@ -52,6 +52,12 @@ _PASS_QUESTION_WEIGHT = 2.5
 _MAX_CORPUS_ENTRIES = 20000
 _BM25_K1 = 1.2
 _BM25_B = 0.75
+_HEADING_WEIGHT = 12.0
+_MINIMUM_HEADING_LENGTH = 4
+_MAXIMUM_HEADING_LENGTH = 90
+_MINIMUM_HEADING_ALPHA_RATIO = 0.7
+_RUNNING_HEADER = "table of contents"
+_HEADING_PREFIXES = ("item ", "note ", "part ", "consolidated", "our ", "recently issued", "statement")
 
 _CORPUS_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -370,14 +376,22 @@ async def _rank_by_full_text_search(memory: object, question: str, limit: int) -
 
 
 class _CorpusDocument:
-    """One stored Memory entry reduced to stemmed term frequencies."""
+    """One stored Memory entry reduced to stemmed body and heading terms."""
 
-    __slots__ = ("citation", "length", "page_keys", "terms")
+    __slots__ = ("citation", "headings", "length", "page_keys", "terms")
 
-    def __init__(self, *, citation: object, page_keys: tuple[tuple[str, str], ...], terms: object) -> None:
+    def __init__(
+        self,
+        *,
+        citation: object,
+        page_keys: tuple[tuple[str, str], ...],
+        terms: object,
+        headings: object,
+    ) -> None:
         self.citation = citation
         self.page_keys = page_keys
         self.terms = terms
+        self.headings = headings
         self.length = sum(terms.values())
 
 
@@ -439,7 +453,16 @@ async def _build_corpus(memory: object) -> _PdfCorpus | None:
             terms[_stem(token)] += 1
         if not terms:
             continue
-        document = _CorpusDocument(citation=record.citation, page_keys=page_keys, terms=terms)
+        headings = Counter()
+        for line in _heading_lines(text):
+            for token in _QUERY_TOKEN.findall(line.lower()):
+                headings[_stem(token)] += 1
+        document = _CorpusDocument(
+            citation=record.citation,
+            page_keys=page_keys,
+            terms=terms,
+            headings=headings,
+        )
         documents.append(document)
         total += document.length
         for term in terms:
@@ -463,7 +486,17 @@ def _query_stems(question: str) -> tuple[str, ...]:
 
 
 def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[float, _CorpusDocument]]:
-    """Score every page with BM25 and keep each page's best entry."""
+    """Score every page and keep each page's best entry.
+
+    The score adds a standing bonus for every question term that appears in one of
+    the page's section headings. A filing names the section that answers a
+    question — ``Item 3. Legal Proceedings``, ``Consolidated Statement of Cash
+    Flows``, ``Note 3 — Restructuring and Impairment Charges`` — while the page
+    body itself is often a table of numbers or a list of place names that shares
+    almost no vocabulary with the question. The bonus is added *after* BM25 rather
+    than folded into the term frequencies, because length normalisation dilutes it
+    otherwise.
+    """
 
     count = len(corpus.documents)
     average = corpus.average_length or 1.0
@@ -482,6 +515,9 @@ def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[
                 1.0 - _BM25_B + _BM25_B * document.length / average
             )
             score += idf[term] * occurrences * (_BM25_K1 + 1.0) / denominator
+        heading_terms = [term for term in terms if document.headings.get(term)]
+        if heading_terms:
+            score += _HEADING_WEIGHT * sum(idf[term] for term in heading_terms)
         if score <= 0.0:
             continue
         for key in document.page_keys:
@@ -489,6 +525,38 @@ def _bm25_page_scores(corpus: _PdfCorpus, terms: tuple[str, ...]) -> list[tuple[
             if current is None or score > current[0]:
                 best[key] = (score, document)
     return sorted(best.values(), key=lambda item: -item[0])
+
+
+def _heading_lines(text: str) -> list[str]:
+    """Return the lines of one page that look like section headings.
+
+    Filings keep their section names on their own line: ``Item 3. Legal
+    Proceedings.``, ``Consolidated Statement of Cash Flows``, ``Note 3 —
+    Restructuring and Impairment Charges``. Numeric table rows and prose
+    paragraphs are rejected so the heading vocabulary stays precise.
+    """
+
+    headings: list[str] = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not _MINIMUM_HEADING_LENGTH <= len(line) <= _MAXIMUM_HEADING_LENGTH:
+            continue
+        lowered = line.lower()
+        if lowered.startswith(_RUNNING_HEADER):
+            continue
+        if sum(1 for character in line if character.isalpha()) < _MINIMUM_HEADING_ALPHA_RATIO * len(line):
+            continue
+        words = line.split()
+        if len(words) < 2:
+            continue
+        titled = sum(1 for word in words if word[:1].isupper()) >= max(2, len(words) - 1)
+        started = lowered.startswith(_HEADING_PREFIXES)
+        if not (titled or started):
+            continue
+        if line[-1] in ".,;:" and not started:
+            continue
+        headings.append(line)
+    return headings
 
 
 def _stem(token: str) -> str:
@@ -516,6 +584,8 @@ def _stem(token: str) -> str:
         token = token[:-4]
     elif token.endswith("ly") and len(token) > 5:
         token = token[:-2]
+    if token.endswith("ion") and len(token) > 6:
+        token = token[:-3]
     if token.endswith("e") and len(token) > 4:
         token = token[:-1]
     if len(token) > 4 and token[-1] == token[-2] and token[-1] not in "aeiouls":
