@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NoteSeek · 课程与文献速查</title>
+<style>
+  :root { --ink:#16202b; --muted:#6b7a8c; --line:#e3e9ef; --accent:#1a6cff; --bg:#f7f9fc; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { padding: 28px 20px 10px; max-width: 860px; margin: 0 auto; }
+  h1 { margin:0 0 4px; font-size: 22px; letter-spacing:.3px; }
+  header p { margin:0; color:var(--muted); font-size: 13.5px; }
+  main { max-width: 860px; margin: 0 auto; padding: 12px 20px 60px; }
+  .box { display:flex; gap:8px; margin: 18px 0 10px; }
+  input[type=search] { flex:1; padding: 13px 15px; font-size:15px; border:1px solid var(--line);
+        border-radius: 10px; background:#fff; outline:none; }
+  input[type=search]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(26,108,255,.12); }
+  button { padding: 0 20px; border:0; border-radius:10px; background:var(--accent); color:#fff;
+           font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.55; cursor: default; }
+  .meta { font-size:12.5px; color:var(--muted); min-height:20px; }
+  .meta b { color: var(--ink); font-weight:600; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:12px 0; }
+  .card h3 { margin:0 0 6px; font-size:15.5px; }
+  .card .src { font-size:12.5px; color:var(--accent); margin-bottom:8px; }
+  .card pre { margin:0; white-space:pre-wrap; word-break:break-word; font:13px/1.65 ui-monospace, Consolas, monospace;
+              color:#33414f; background:#f6f8fb; padding:10px 12px; border-radius:8px; max-height:220px; overflow:auto; }
+  .empty { color:var(--muted); font-size:14px; padding: 24px 0; text-align:center; }
+  .hint { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  code { background:#eef2f7; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NoteSeek · 课程与文献速查</h1>
+  <p>把散落的笔记、论文摘录、会议记录丢进 seekdb，用一句话找回那一段，并且告诉你它出自哪儿。</p>
+</header>
+
+<main>
+  <div class="box">
+    <input id="q" type="search" placeholder="例如：REPEATABLE READ 是怎么避免幻读的？" autofocus />
+    <button id="go">检索</button>
+  </div>
+  <div class="hint">试试：<code>MVCC 的快照读</code> · <code>为什么用 B+ 树而不是哈希</code> · <code>RRF 融合排序</code> · <code>seekdb 的 Mock AI Service</code></div>
+  <div class="meta" id="meta"></div>
+  <div id="out"></div>
+</main>
+
+<script>
+const q = document.getElementById('q');
+const go = document.getElementById('go');
+const out = document.getElementById('out');
+const meta = document.getElementById('meta');
+
+async function run() {
+  const text = q.value.trim();
+  if (!text) return;
+  go.disabled = true;
+  meta.innerHTML = '检索中…';
+  out.innerHTML = '';
+  try {
+    const res = await fetch('/api/search?k=5&q=' + encodeURIComponent(text));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.status);
+    meta.innerHTML = `命中 <b>${data.count}</b> 段 · 检索方式 <b>${data.mode === 'hybrid' ? '向量 + 全文混合（RRF）' : '向量'}</b> · 耗时 <b>${data.took_ms} ms</b>`;
+    if (!data.results.length) {
+      out.innerHTML = '<div class="empty">没有命中。换个说法，或者先把笔记导入（见 README）。</div>';
+      return;
+    }
+    out.innerHTML = data.results.map((r, i) => `
+      <div class="card">
+        <h3>${i + 1}. ${escapeHtml(r.title)}</h3>
+        <div class="src">出处：${escapeHtml(r.source)}</div>
+        <pre>${escapeHtml(r.snippet)}</pre>
+      </div>`).join('');
+  } catch (error) {
+    meta.textContent = '检索失败：' + error.message;
+  } finally {
+    go.disabled = false;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+go.addEventListener('click', run);
+q.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NoteSeek · 课程与文献速查台</title>
+<meta name="description" content="把散落的笔记、论文摘录、会议记录丢进 seekdb，用一句话找回那一段，并告诉你它出自哪儿。" />
+<style>
+  :root { --ink:#14202c; --muted:#66788a; --line:#e4eaf1; --accent:#1a6cff; --bg:#f7f9fc; --card:#fff; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px}
+  header{padding:64px 0 40px;border-bottom:1px solid var(--line)}
+  .tag{display:inline-block;font-size:12.5px;letter-spacing:.08em;color:var(--accent);background:#e8f0ff;border-radius:999px;padding:3px 11px}
+  h1{font-size:34px;line-height:1.25;margin:16px 0 12px;letter-spacing:-.4px}
+  .lead{font-size:17px;color:#41566b;max-width:680px;margin:0}
+  section{padding:44px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:21px;margin:0 0 18px;letter-spacing:-.2px}
+  p{margin:0 0 14px;color:#3b4f63}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card h3{margin:0 0 8px;font-size:16px}
+  .card p{margin:0;font-size:14.5px;color:var(--muted)}
+  .flow{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0 0;font-size:14.5px}
+  .step{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px}
+  .arrow{color:#a9b8c8}
+  figure{margin:0}
+  figure img{width:100%;border-radius:12px;border:1px solid var(--line);display:block}
+  figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+  .shot{background:#eef2f7;border:1px dashed #c8d4e2;border-radius:12px;height:260px;display:flex;
+        align-items:center;justify-content:center;color:#93a5b8;font-size:14px}
+  code{background:#eef2f7;padding:2px 6px;border-radius:5px;font-size:13.5px}
+  pre{background:#0f1a26;color:#d8e4f0;padding:16px 18px;border-radius:12px;overflow:auto;font:13.5px/1.7 ui-monospace,Consolas,monospace}
+  pre .k{color:#7fd1ff}
+  .btn{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;padding:11px 20px;border-radius:10px;font-size:15px}
+  .btn.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent);margin-left:10px}
+  footer{padding:34px 0 60px;color:var(--muted);font-size:13.5px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
+  th{background:#f2f6fb;font-weight:600;font-size:13.5px;color:#44soft}
+  tr:last-child td{border-bottom:0}
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <span class="tag">OceanBase 数据库大赛 2026 · Qoder 赛道</span>
+  <h1>NoteSeek · 课程与文献速查台</h1>
+  <p class="lead">把散落的课程笔记、论文摘录、会议记录丢进 seekdb，用一句话找回那一段——并且告诉你它出自哪一篇、哪一小节、第几段。</p>
+  <div style="margin-top:24px">
+    <a class="btn" href="#demo">看演示</a>
+    <a class="btn ghost" href="https://github.com/love86-qmb/powercontext/tree/2026-competition-ecosystem/qoder" target="_blank" rel="noopener">代码仓库</a>
+  </div>
+</header>
+
+<section class="wrap">
+  <h2>要解决的问题</h2>
+  <p>学生的资料永远是散的：课程笔记在 Markdown 里、论文摘录在 PDF 里、比赛文档在几十个网页里。
+     想找「上学期隔离级别那页是怎么说的」，只能靠记忆里的关键词一个个文件翻；翻到了也说不清它出自哪儿，复习时不敢引用。</p>
+  <p><strong>NoteSeek 把「找得到」和「信得过」一起解决</strong>：检索结果永远带出处，可以把命中的原文片段直接贴进复习笔记或论文引用里。</p>
+</section>
+
+<section class="wrap">
+  <h2>核心功能</h2>
+  <div class="grid">
+    <div class="card"><h3>语义 + 关键词混合检索</h3><p>向量路找「意思相近」，全文路找「型号、缩写、专有名词」，两路用 RRF 融合排名——单一方式必然漏。</p></div>
+    <div class="card"><h3>出处可回查</h3><p>每条结果带「文档 › 小节 › 片段 #n」，来自入库时存下的元数据，不是事后猜的。</p></div>
+    <div class="card"><h3>切块带小节标题</h3><p>把小节标题拼进被向量化的文本：答案常常在标题里（「四种隔离级别」），正文词汇却对不上。</p></div>
+    <div class="card"><h3>零外部模型依赖</h3><p>内置本地哈希嵌入，不需要 API Key、不需要下载模型，评审克隆下来就能跑。</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>它是怎么跑起来的</h2>
+  <div class="flow">
+    <span class="step">Markdown 笔记</span><span class="arrow">→</span>
+    <span class="step">按段落切块（带小节标题）</span><span class="arrow">→</span>
+    <span class="step">写入 seekdb（向量 + 全文 + 元数据）</span>
+  </div>
+  <div class="flow" style="margin-top:14px">
+    <span class="step">一句话提问</span><span class="arrow">→</span>
+    <span class="step">seekdb 混合检索（RRF 融合）</span><span class="arrow">→</span>
+    <span class="step">带出处的片段</span>
+  </div>
+  <pre><span class="k">GET</span> /api/search?q=REPEATABLE%20READ%20怎么避免幻读&amp;k=2
+
+{
+  "query": "REPEATABLE READ 怎么避免幻读",
+  "mode": "hybrid",          <span class="k">// seekdb 向量 + 全文混合检索</span>
+  "took_ms": 301.2,
+  "count": 2,
+  "results": [
+    {
+      "title": "01-数据库事务与隔离级别",
+      "heading": "四种隔离级别",
+      "source": "01-数据库事务与隔离级别 › 四种隔离级别 › 片段 #2",
+      "snippet": "| REPEATABLE READ | 不可能 | 不可能 | InnoDB 下用间隙锁基本避免 | ..."
+    }
+  ]
+}</pre>
+</section>
+
+<section class="wrap" id="demo">
+  <h2>演示截图</h2>
+  <figure>
+    <div class="shot">把本地运行的检索界面截图放在这里（static/screenshot-search.png）</div>
+    <figcaption>检索「REPEATABLE READ 是怎么避免幻读的」：命中片段 + 出处 + 混合检索耗时。</figcaption>
+  </figure>
+  <figure style="margin-top:22px">
+    <div class="shot">把 /health 或 seekdb 表数据截图放在这里（static/screenshot-seekdb.png）</div>
+    <figcaption>seekdb 侧的记录：13 个片段入库，混合检索命中。</figcaption>
+  </figure>
+</section>
+
+<section class="wrap">
+  <h2>实测效果</h2>
+  <table>
+    <thead><tr><th>提问</th><th>命中文档</th><th>出处小节</th><th>检索方式</th></tr></thead>
+    <tbody>
+      <tr><td>REPEATABLE READ 是怎么避免幻读的</td><td>01-数据库事务与隔离级别</td><td>四种隔离级别</td><td>hybrid · 301ms</td></tr>
+      <tr><td>为什么用 B+ 树而不是哈希索引</td><td>02-B+树与索引优化</td><td>B+ 树与索引优化</td><td>hybrid · 14.6ms</td></tr>
+      <tr><td>seekdb 的 Mock AI Service 是干什么的</td><td>04-OceanBase比赛笔记</td><td>seekdb 赛道要点</td><td>hybrid · 99.5ms</td></tr>
+      <tr><td>回表和覆盖索引</td><td>02-B+树与索引优化</td><td>EXPLAIN 要看的字段</td><td>hybrid · 23.9ms</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="wrap">
+  <h2>技术栈与分工</h2>
+  <div class="grid">
+    <div class="card"><h3>Qoder</h3><p>项目主要开发工作：需求拆解、后端与前端代码生成、切块与检索逻辑、调试；项目网站通过 <strong>Qoder Sites</strong> 发布。</p></div>
+    <div class="card"><h3>seekdb</h3><p>核心检索：片段向量 + 全文索引 + 元数据，混合检索与元数据过滤都在库内完成，写入后刷新索引立即可查。</p></div>
+    <div class="card"><h3>FastAPI</h3><p>轻量后端，两个接口 <code>/api/ingest</code>、<code>/api/search</code>，前端是单文件 HTML。</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>自己跑一遍</h2>
+  <pre>docker run -d --name seekdb -p 2881:2881 oceanbase/seekdb:latest
+cd qoder &amp;&amp; pip install -r requirements.txt
+SEEKDB_HOST=127.0.0.1 python app.py --ingest samples/notes
+SEEKDB_HOST=127.0.0.1 python app.py --port 8090
+
+<span class="k"># 打开</span> http://127.0.0.1:8090</pre>
+  <p style="margin-top:14px">完整的运行说明与验证样例见仓库中的 <code>qoder/README.md</code>。</p>
+</section>
+
+<footer class="wrap">
+  NoteSeek · 第六届 OceanBase 数据库大赛（2026）Qoder 赛道参赛作品 ·
+  代码与文档：<a href="https://github.com/love86-qmb/powercontext/tree/2026-competition-ecosystem/qoder" target="_blank" rel="noopener">GitHub</a>
+</footer>
+
+</body>
+</html>
