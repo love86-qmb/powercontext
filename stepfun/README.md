@@ -119,7 +119,23 @@ SELECT collection_name, settings FROM sdk_collections;   -- kb_chunks 的维度 
 SHOW TABLES LIKE 'c$v2$%';                               -- 片段表：_id / document / embedding VECTOR(384) / metadata json
 ```
 
-## 7. 已知限制
+## 7. 实测结果与截图
+
+本机（Chrome + WebGPU）实测：语料 6 篇 → 12 片段；**Recall@5 = 100%（10/10）**，INT8 与 FP32 结果一致；
+seekdb 混合检索中位 12.8 ms，端到端中位 261 ms。完整数据表见 `TECH-NOTE.md` 第 5 节。
+
+截图（`screenshots/`）：
+
+| 文件 | 内容 |
+|---|---|
+| `01-search-btree-q8.png` | 检索「为什么 B+ 树比哈希索引更适合范围查询」，命中 02-索引结构，出处指向同名小节 |
+| `02-search-int8-q8.png` | 检索「INT8 量化对模型体积和精度的影响」，命中 05-端侧推理与量化 |
+| `03-ingest-log-q8.png` | 导入日志：切块 6 篇 → 12 片、写入 253.8 ms、刷新索引 648.5 ms、本机向量化 13083 ms ≈ 0.9 片/秒 |
+| `04-bench-q8-webgpu.png` | INT8 + WebGPU 基准：十题全绿、Recall@5 100%、各阶段中位数 |
+| `05-bench-fp32-webgpu.png` | FP32 + WebGPU 基准：同评测集，Recall@5 同为 100% |
+
+## 8. 已知限制
+
 
 1. 模型权重需要**首次联网下载**（约几十 MB，进浏览器缓存）；离线环境需预置权重。
 2. 语料只支持纯文本 / Markdown；PDF 需先转文本。
@@ -128,7 +144,7 @@ SHOW TABLES LIKE 'c$v2$%';                               -- 片段表：_id / do
 5. 重导入同一文档用 `upsert` 幂等，但**小节改名/删段后旧片段不会自动清理**（需按 `doc_id` 先删后写）。
 6. WebGPU 的实际吞吐受显卡与驱动影响，本仓库的实测数字来自提交者本机，换设备会有差异。
 
-## 8. 数据来源声明
+## 9. 数据来源声明
 
 - `samples/corpus/` 六篇语料为本次参赛自写（依据公开教材与官方文档整理），不含他人版权内容。
 - 模型来自 HuggingFace 公开仓库（`Xenova/*` 的 ONNX 转换版本），量化文件为官方提供的 `q8` / `fp16` 精度。

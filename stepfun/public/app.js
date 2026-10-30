@@ -195,8 +195,24 @@ function chunkText(title, text) {
   }));
 }
 
+/**
+ * 稳定的 doc_id：必须保留中文，且不能带随机量。
+ * 早期版本把中文全部过滤掉、再用 Date.now() 兜底，导致同一篇文档每次导入都换一批 id，
+ * upsert 变成纯插入（实测重复导入后片段数从 12 变 24），幂等性就没了。
+ */
 function slug(title) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `doc${Date.now() % 100000}`;
+  const base = title
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  if (base) return base;
+  // 完全没有可用字符时，用标题的稳定哈希兜底（不能是随机数）
+  let hash = 0;
+  for (let index = 0; index < title.length; index += 1) {
+    hash = (hash * 31 + title.charCodeAt(index)) >>> 0;
+  }
+  return `doc-${hash.toString(36)}`;
 }
 
 // ------------------------------------------------------------------ 导入
