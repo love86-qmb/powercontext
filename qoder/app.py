@@ -1,292 +1,507 @@
-"""NoteSeek · 课程与文献速查台
+"""NoteSeek 课程与文献速查台。
 
-把散落的课程笔记 / 论文摘录 / 会议记录丢进 seekdb，用一句话检索，
-回答里必须带出处（文件 + 小节 + 片段）。核心是 seekdb 的**向量 + 全文混合检索**。
+  build_client()          设了 SEEKDB_HOST 走服务模式，否则走嵌入式
+  chunk_markdown(text)    Markdown -> 片段（每片记住所属 `## 小节`）
+  ingest_document(...)    片段 -> collection，写完 refresh_index()
+  search(query, k, tag)   hybrid_search 优先，后端不支持时回退向量
+  GET /api/search         HTTP 层，检索失败一律 500，绝不吞成空结果
+  /                       static/index.html 单文件前端
 
-    python app.py            # http://127.0.0.1:8090
-    python app.py --ingest samples/notes   # 先把示例笔记灌进去
-
-环境变量：
-    SEEKDB_HOST / SEEKDB_PORT / SEEKDB_USER / SEEKDB_PASSWORD / SEEKDB_DB
-    （不设 SEEKDB_HOST 时用嵌入式本地库，仅 Linux）
+命令行：python app.py --ingest samples/notes [--tag cs101]
 """
 
 from __future__ import annotations
 
 import argparse
-import math
+import hashlib
 import os
 import re
+import sys
 import time
-import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pyseekdb
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Query
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
-from embedding import HashEmbedding
+# 共享 seekdb 上 notes 可能已被别的项目占用，用环境变量隔离集合名
+COLLECTION_NAME = os.getenv("SEEKDB_COLLECTION", "notes").strip() or "notes"
+# 离线兜底：拿不到 HuggingFace 权重时可设 EMBEDDING_MODE=hash，改用内置确定性哈希嵌入
+EMBEDDING_MODE = (os.getenv("EMBEDDING_MODE", "onnx") or "onnx").strip().lower()
+SNIPPET_CHARS = 160
+CHUNK_MAX_CHARS = 520
+CHUNK_OVERLAP_CHARS = 60
+# 正文预算：留满重叠余量，保证「重叠 + 正文」仍 <= CHUNK_MAX_CHARS
+CHUNK_BODY_CHARS = CHUNK_MAX_CHARS - CHUNK_OVERLAP_CHARS
 
-COLLECTION = "notes"
-EMBEDDING = HashEmbedding()
-STATIC = Path(__file__).parent / "static"
-CHUNK_CHARS = 520
-CHUNK_OVERLAP = 60
+_SECTION_RE = re.compile(r"^##(?!#)\s*(.*?)\s*$")
+# 一级标题就是文档标题本身，只作为出处回退值，不该混进正文片段
+_H1_RE = re.compile(r"^#(?:\s+\S.*?)?\s*$")
+# 从原始文本里取一级标题当文档名；没有就用文件名
+_H1_LINE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+_FENCE = "```"
+# 中文标点无条件断句；latin 标点须后接空白才断，避免 3.14 / e.g. 被腰斩
+_SOFT_TERMINATORS = "。！？；\n"
+_HARD_TERMINATORS = ".!?;"
 
-app = FastAPI(title="NoteSeek", version="1.0.0", description="课程与文献速查台（seekdb 混合检索）")
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
-
-_client: Any = None
-_collection: Any = None
+_client = None
+_collection = None
 
 
-# --------------------------------------------------------------------------- seekdb
+# ---------------------------------------------------------------- 连接
 
+def build_client():
+    """SEEKDB_HOST 非空 -> RemoteServerClient；否则 -> 嵌入式 Client。
 
-def collection() -> Any:
-    global _client, _collection
-    if _collection is not None:
-        return _collection
-    host = os.environ.get("SEEKDB_HOST", "").strip()
-    database = os.environ.get("SEEKDB_DB", "test")
+    返回的是 pyseekdb 的 collection 操作代理；构造过程不连库，所以连接失败会在
+    第一次 get_or_create_collection / upsert 时才浮出来。
+    """
+    host = (os.getenv("SEEKDB_HOST") or "").strip()
+    database = os.getenv("SEEKDB_DATABASE", "test")
+
     if host:
-        _client = pyseekdb.Client(
+        host, _, port_from_host = host.partition(":")
+        return pyseekdb.Client(
             host=host,
-            port=int(os.environ.get("SEEKDB_PORT", "2881")),
-            tenant=os.environ.get("SEEKDB_TENANT", "sys"),
+            port=int(os.getenv("SEEKDB_PORT", "") or port_from_host or 2881),
+            tenant=os.getenv("SEEKDB_TENANT", "sys"),
             database=database,
-            user=os.environ.get("SEEKDB_USER", "root"),
-            password=os.environ.get("SEEKDB_PASSWORD", ""),
+            user=os.getenv("SEEKDB_USER", "root"),
+            password=os.getenv("SEEKDB_PASSWORD", ""),
         )
-    else:
-        path = os.environ.get("SEEKDB_PATH", "./seekdb_data")
-        os.makedirs(path, exist_ok=True)
-        _client = pyseekdb.Client(path=path, database=database)
-    _collection = _client.get_or_create_collection(COLLECTION, embedding_function=EMBEDDING)
+
+    try:
+        import pylibseekdb  # noqa: F401  仅 linux / mac-arm64 提供
+    except ImportError as exc:
+        raise RuntimeError(
+            "嵌入式模式需要 pylibseekdb，当前平台不可用。"
+            "请设 SEEKDB_HOST 连服务端（如 docker run -p 2881:2881 oceanbase/seekdb），"
+            "或换 linux/mac-arm64 环境。"
+        ) from exc
+
+    return pyseekdb.Client(path=os.getenv("SEEKDB_PATH", "./data/seekdb.db"), database=database)
+
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = build_client()
+    return _client
+
+
+def get_collection():
+    """collection 用 SDK 默认索引：HNSW + cosine + 384 维 + 默认 ONNX embedding。
+
+    换 embedding 模型必须同时改维度并整库重建，故此处刻意不隐式带参。
+    """
+    global _collection
+    if _collection is None:
+        if EMBEDDING_MODE == "hash":
+            # 维度不同（256）不能和默认 ONNX 集合（384）共用，集合名自动加后缀
+            from embedding import HashEmbedding
+
+            _collection = get_client().get_or_create_collection(
+                COLLECTION_NAME + "_hash", embedding_function=HashEmbedding()
+            )
+        else:
+            _collection = get_client().get_or_create_collection(COLLECTION_NAME)
     return _collection
 
 
-# --------------------------------------------------------------------------- 切块
+def doc_id_of(title: str) -> str:
+    return hashlib.sha1(title.strip().encode("utf-8")).hexdigest()[:12]
 
 
-def _heading_before(lines: list[str], index: int) -> str:
-    for cursor in range(index, -1, -1):
-        line = lines[cursor].strip()
-        if line.startswith("#"):
-            return line.lstrip("# ").strip()
-    return ""
+# ---------------------------------------------------------------- 切块
+
+def _split_sentences(text: str) -> list[str]:
+    out: list[str] = []
+    buf: list[str] = []
+    for i, ch in enumerate(text):
+        buf.append(ch)
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if ch in _SOFT_TERMINATORS or (ch in _HARD_TERMINATORS and nxt in " \t\n"):
+            out.append("".join(buf))
+            buf = []
+    if buf:
+        out.append("".join(buf))
+    return [s for s in out if s] or [text]
 
 
-def chunk_markdown(text: str) -> list[tuple[str, str]]:
-    """按段落切成 ≤CHUNK_CHARS 的片段，并带上它所在小节的标题。
+def _overlap_prefix(prev: str) -> str:
+    """上一块尾部至多 CHUNK_OVERLAP_CHARS 字符，作为下一块的重叠起点。
 
-    注意 `start_index` 必须跟着「这一块的起点」走：如果切块时只把上一块的尾巴
-    塞回 buffer，起点就会被记住成全文第一行，所有片段都会挂上文档大标题、
-    拿不到真正的 `## 小节` 标题（踩过这个坑，检索出处会变得没用）。
+    起点尽量落在某个句末之后，避免半句起头；但块尾常常正好就是句末，此时对齐会把重叠
+    吃成空串（重叠静默消失，检索召回变差且没人报错），所以对齐失败就退回原始尾巴。
     """
+    if len(prev) <= CHUNK_OVERLAP_CHARS:
+        return ""
+    tail = prev[-CHUNK_OVERLAP_CHARS:]
+    for i, ch in enumerate(tail):
+        if (ch in _SOFT_TERMINATORS or ch in _HARD_TERMINATORS) and tail[i + 1 :].strip():
+            return tail[i + 1 :].strip()
+    return tail.strip()
 
-    lines = text.split("\n")
-    chunks: list[tuple[str, str]] = []
-    buffer: list[str] = []
-    carry = ""
-    size = 0
-    start_index = 0
-    for index, line in enumerate(lines):
-        if not buffer:
-            start_index = index
-            if carry:
-                buffer.append(carry)
-                size = len(carry) + 1
-        buffer.append(line)
-        size += len(line) + 1
-        if size >= CHUNK_CHARS:
-            body = "\n".join(buffer).strip()
-            if body:
-                chunks.append((_heading_before(lines, start_index), body))
-            carry = body[-CHUNK_OVERLAP:] if len(body) > CHUNK_OVERLAP else ""
-            buffer, size = [], 0
-    body = "\n".join(buffer).strip()
-    if body:
-        chunks.append((_heading_before(lines, start_index), body))
+
+def _pack(units: list[str], budget: int, capacity: int) -> list[str]:
+    """把文本单元塞进 <=capacity 的块；超长单元先按句切到 <=budget，再逐块带重叠。"""
+    sliced: list[str] = []
+    for unit in units:
+        if len(unit) <= budget:
+            sliced.append(unit)
+            continue
+        atoms: list[str] = []
+        for sent in _split_sentences(unit):
+            while len(sent) > budget:  # 单句超长：硬切兜底，顺序保持
+                atoms.append(sent[:budget])
+                sent = sent[budget:]
+            if sent:
+                atoms.append(sent)
+
+        pieces, cur, cur_len = [], [], 0
+        for atom in atoms:
+            if cur and cur_len + len(atom) > budget:
+                pieces.append("".join(cur).strip())
+                cur, cur_len = [], 0
+            cur.append(atom)
+            cur_len += len(atom)
+        if cur:
+            pieces.append("".join(cur).strip())
+
+        chained: list[str] = []
+        for piece in pieces:
+            head = _overlap_prefix(chained[-1]) if chained else ""
+            chained.append((head + "\n" + piece).strip() if head else piece)
+        sliced.extend(chained)
+
+    blocks: list[str] = []
+    cur = ""
+    for unit in sliced:
+        if not cur:
+            cur = unit
+            continue
+        cand = cur + "\n\n" + unit
+        cap = capacity if not blocks else budget
+        if len(cand) <= cap:
+            cur = cand
+        else:
+            blocks.append(cur)
+            head = _overlap_prefix(cur)
+            cur = (head + "\n" + unit).strip() if head else unit
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def _iter_sections(body: str) -> list[tuple[str | None, list[str]]]:
+    """按 `## 小节` 归行；首个小节之前的正文归属 None，由调用方回退文档标题。
+
+    `# 一级标题` 行直接丢弃：它就是文档标题，重复进正文只会污染向量与全文索引。
+    """
+    sections: list[tuple[str | None, list[str]]] = [(None, [])]
+    in_fence = False
+    for line in body.splitlines():
+        if line.lstrip().startswith(_FENCE):
+            in_fence = not in_fence
+            sections[-1][1].append(line)
+            continue
+        stripped = line.strip()
+        if in_fence:
+            sections[-1][1].append(line)
+            continue
+        m = _SECTION_RE.match(stripped)
+        if m:
+            sections.append((m.group(1), []))
+            continue
+        if _H1_RE.match(stripped):
+            continue
+        sections[-1][1].append(line)
+    return [(h, ls) for h, ls in sections if any(l.strip() for l in ls)]
+
+
+def _iter_paragraphs(lines: list[str]) -> list[str]:
+    """空行断段；代码围栏内的空行不断段。"""
+    paras: list[str] = []
+    buf: list[str] = []
+    in_fence = False
+    for line in lines:
+        if line.lstrip().startswith(_FENCE):
+            in_fence = not in_fence
+            buf.append(line)
+            continue
+        if not in_fence and not line.strip():
+            if buf:
+                paras.append("\n".join(buf).strip("\n"))
+                buf = []
+            continue
+        buf.append(line)
+    if buf:
+        paras.append("\n".join(buf).strip("\n"))
+    return [p for p in paras if p.strip()]
+
+
+def chunk_markdown(text: str) -> list[dict]:
+    """Markdown 正文 -> [{"seq", "heading", "chars", "text"}]。
+
+    - text 只含原文，每片 <= CHUNK_MAX_CHARS；同小节相邻片之间带 <= CHUNK_OVERLAP_CHARS
+      的重叠，跨小节不重叠——出处变了还重复上一节的尾巴，只会把两个小节的命中混在一起。
+    - heading 是该片段所属的 `## 小节`；落在第一个 `##` 之前的片段返回 None，
+      由 ingest_document 回退成文档标题。
+    - seq 是**小节内**的段号，从 1 起，对应出处「文档 > 小节 > 第 N 段」。
+    """
+    if not text or not text.strip():
+        return []
+
+    body = _FRONTMATTER_RE.sub("", text.replace("\r\n", "\n").replace("\r", "\n"), count=1)
+    chunks: list[dict] = []
+    for heading, lines in _iter_sections(body):
+        paragraphs = _iter_paragraphs(lines)
+        if not paragraphs:
+            continue
+        blocks = _pack(paragraphs, CHUNK_BODY_CHARS, CHUNK_MAX_CHARS)
+        for seq, block in enumerate(blocks, 1):
+            chunks.append({"heading": heading, "seq": seq, "chars": len(block), "text": block})
     return chunks
 
 
-def ingest_document(title: str, text: str, tag: str = "") -> dict[str, Any]:
-    coll = collection()
+# ---------------------------------------------------------------- 写入
+
+def ingest_document(title: str, text: str, tag: str = "") -> dict:
+    """一篇文档切块后写入 collection "notes"，写完 refresh_index() 让索引立刻可见。
+
+    document 字段 = "标题 · 小节\\n正文"：小节进向量与全文索引，检索「IK 分词」这类
+    只出现在标题里的词也能命中；展示用的正文靠 metadata 还原。
+    """
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title 不能为空")
+
+    doc_id = doc_id_of(title)
     chunks = chunk_markdown(text)
     if not chunks:
-        raise ValueError("文档是空的")
-    doc_id = uuid.uuid4().hex[:10]
+        return {"doc_id": doc_id, "collection": COLLECTION_NAME, "count": 0, "ids": []}
+
+    collection = get_collection()
+
+    added_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ids, documents, metadatas = [], [], []
-    for seq, (heading, body) in enumerate(chunks):
-        ids.append(f"{doc_id}-{seq:03d}")
-        # 把小节标题拼进被向量化的文本：标题往往就是答案所在的位置，正文却几乎没有词面重合
-        documents.append(f"{title} · {heading}\n{body}" if heading else f"{title}\n{body}")
+    for index, chunk in enumerate(chunks, 1):
+        heading = chunk["heading"] or title
+        # seq 是小节内段号，每个小节都从 1 起，直接拿它当主键会让不同小节的同名片段互相覆盖
+        ids.append(f"{doc_id}#{index:04d}")
+        documents.append(f"{title} · {heading}\n{chunk['text']}")
         metadatas.append(
             {
                 "doc_id": doc_id,
                 "title": title,
                 "heading": heading,
-                "seq": seq,
+                "seq": chunk["seq"],
                 "tag": tag,
-                "chars": len(body),
-                "added_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "chars": chunk["chars"],
+                "added_at": added_at,
             }
         )
-    coll.add(ids=ids, documents=documents, metadatas=metadatas)
-    try:
-        coll.refresh_index()  # seekdb 的索引是异步的，写完必须刷新才能立刻检索到
-    except Exception:  # noqa: BLE001 - 老版本没有这个方法
-        pass
-    return {"ok": True, "doc_id": doc_id, "title": title, "chunks": len(chunks)}
+
+    # upsert 而非 add：同 doc_id 重跑覆盖。正文变短产生的孤儿片段清理放在下一部分。
+    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    collection.refresh_index()
+
+    return {
+        "doc_id": doc_id,
+        "collection": COLLECTION_NAME,
+        "count": len(ids),
+        "chars_total": sum(c["chars"] for c in chunks),
+        "ids": ids,
+    }
 
 
-# --------------------------------------------------------------------------- 检索
+# ---------------------------------------------------------------- 检索
+
+# 只有「后端根本没有 hybrid search 这套东西」才允许回退；连接失败、SQL 出错一律往上抛，
+# 否则 seekdb 挂掉会被伪装成「查无结果」，这是最坑人的一种静默失败。
+_HYBRID_UNSUPPORTED_RE = re.compile(
+    r"dbms_hybrid_search|hybrid[_\s-]*search.*(not|unsupport|unknown)|"
+    r"procedure.*(hybrid|search).*does\s*not\s*exist",
+    re.I,
+)
+# 关键词：连续的英文/数字串，或连续的中文片段；取最长的那个
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*|[\u4e00-\u9fff]+")
 
 
-def _rows(result: Any) -> list[dict[str, Any]]:
-    if not isinstance(result, dict):
-        return []
-    ids = (result.get("ids") or [[]])[0]
-    docs = (result.get("documents") or [[]])[0]
-    metas = (result.get("metadatas") or [[]])[0]
-    dists = (result.get("distances") or [[]])[0]
+def pick_keyword(query: str) -> str:
+    tokens = _TOKEN_RE.findall(query or "")
+    return max(tokens, key=len) if tokens else ""
+
+
+def _is_hybrid_unsupported(exc: Exception) -> bool:
+    return isinstance(exc, (AttributeError, NotImplementedError)) or bool(
+        _HYBRID_UNSUPPORTED_RE.search(str(exc))
+    )
+
+
+def _rows(raw: dict) -> list[dict]:
+    """把 SDK 的 [[...]] 双层结果拍平成逐条记录。少取一层会得到空列表。"""
+    ids = (raw.get("ids") or [[]])[0]
+    metas = (raw.get("metadatas") or [[]])[0]
+    docs = (raw.get("documents") or [[]])[0]
+    dists = (raw.get("distances") or [[]])[0]
     rows = []
-    for index, row_id in enumerate(ids):
-        meta = metas[index] if index < len(metas) and isinstance(metas[index], dict) else {}
-        distance = dists[index] if index < len(dists) and dists[index] is not None else None
+    for i, _id in enumerate(ids):
+        meta = metas[i] if i < len(metas) and metas[i] else {}
         rows.append(
             {
-                "id": row_id,
-                "text": docs[index] if index < len(docs) else "",
-                "title": meta.get("title", ""),
-                "heading": meta.get("heading", ""),
-                "seq": meta.get("seq", 0),
-                "tag": meta.get("tag", ""),
-                "distance": round(float(distance), 4) if distance is not None else None,
+                "id": _id,
+                "metadata": meta or {},
+                "document": docs[i] if i < len(docs) and docs[i] else "",
+                "distance": dists[i] if i < len(dists) else None,
             }
         )
     return rows
 
 
-_TOKEN = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
+def _to_hit(row: dict, meta: dict) -> dict:
+    """document 存的是「标题 · 小节\\n正文」，展示时剥掉拼进去的前缀，只留正文。"""
+    body = row["document"].split("\n", 1)[1] if "\n" in row["document"] else row["document"]
+    title = meta.get("title") or ""
+    heading = meta.get("heading") or title
+    seq = int(meta.get("seq") or 1)
+    snippet = body.replace("\n", " ").strip()
+    if len(snippet) > SNIPPET_CHARS:
+        snippet = snippet[:SNIPPET_CHARS].rstrip() + "…"
+    return {
+        "title": title,
+        "heading": heading,
+        "snippet": snippet,
+        "source": f"{title} › {heading} › 片段 #{seq}",
+        "distance": row["distance"],
+    }
 
 
-def keywords(query: str, limit: int = 3) -> list[str]:
-    """给全文检索挑几个关键词：优先较长的英文词，其次中文双字片段。"""
-    words = [w for w in re.findall(r"[a-zA-Z]{3,}", query.lower())]
-    words.sort(key=len, reverse=True)
-    picked = words[:limit]
-    cjk = re.findall(r"[\u4e00-\u9fff]{2,}", query)
-    picked.extend(cjk[:limit])
-    return picked[:limit] if picked else [query[:8]]
+def search(query: str, k: int = 8, tag: str = "") -> dict:
+    """一句话检索 -> {"query","mode","took_ms","count","results"}。
 
-
-def search(query: str, k: int = 5, tag: str | None = None) -> dict[str, Any]:
-    coll = collection()
-    where = {"tag": tag} if tag else None
+    hybrid 路：全文分支用 where_document $contains 抓关键词，向量分支用 knn.query_texts；
+    tag 过滤必须两边各下一遍——只写一处会出现「向量结果没被过滤」的假象。
+    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("query 不能为空")
+    k = max(1, min(int(k), 50))
+    where = {"tag": tag} if (tag or "").strip() else None
     started = time.perf_counter()
+
+    collection = get_collection()
     mode = "hybrid"
-    rows: list[dict[str, Any]] = []
     try:
-        raw = coll.hybrid_search(
-            query={"where_document": {"$contains": keywords(query)[0]}, "n_results": max(k * 6, 30)}
-            if not where
-            else {"where_document": {"$contains": keywords(query)[0]}, "where": where, "n_results": max(k * 6, 30)},
-            knn={"query_texts": [query], "n_results": max(k * 6, 30), **({"where": where} if where else {})},
+        branch = {"where": where} if where else {}
+        keyword = pick_keyword(query)
+        fulltext = dict(branch)
+        if keyword:
+            fulltext["where_document"] = {"$contains": keyword}
+        raw = collection.hybrid_search(
+            query=fulltext or None,
+            knn={**branch, "query_texts": [query]},
             rank={"rrf": {"rank_window_size": 60, "rank_constant": 60}},
-            n_results=max(k * 4, 20),
-            include=["documents", "metadatas"],
+            n_results=k,
+            include=["metadatas", "documents"],
         )
-        rows = _rows(raw)
-    except Exception:  # noqa: BLE001 - 混合检索不可用时退回纯向量
+    except Exception as exc:  # noqa: BLE001 - 只吞「后端不支持」，其余原样上抛给 HTTP 层
+        if not _is_hybrid_unsupported(exc):
+            raise
         mode = "vector"
-        raw = coll.query(query_texts=[query], n_results=max(k * 4, 20), **({"where": where} if where else {}))
-        rows = _rows(raw)
-    elapsed = (time.perf_counter() - started) * 1000
-
-    results = []
-    for row in rows[:k]:
-        results.append(
-            {
-                "chunk_id": row["id"],
-                "title": row["title"],
-                "heading": row["heading"],
-                "snippet": row["text"],
-                "source": f"{row['title']} › {row['heading'] or '正文'} › 片段 #{row['seq'] + 1}",
-                "distance": row["distance"],
-            }
+        raw = collection.query(
+            query_texts=[query],
+            n_results=k,
+            where=where,
+            include=["metadatas", "documents"],
         )
-    return {"query": query, "mode": mode, "took_ms": round(elapsed, 1), "count": len(results), "results": results}
+
+    results = [_to_hit(row, row["metadata"]) for row in _rows(raw)][:k]
+    return {
+        "query": query,
+        "mode": mode,
+        "took_ms": round((time.perf_counter() - started) * 1000, 1),
+        "count": len(results),
+        "results": results,
+    }
 
 
-# --------------------------------------------------------------------------- HTTP
-
-
-class IngestRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    text: str = Field(..., min_length=1)
-    tag: str = Field(default="", max_length=40)
-
-
-@app.get("/")
-def index_page() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
-
-
-@app.get("/health")
-def health() -> dict[str, Any]:
-    coll = collection()
-    try:
-        rows = int(coll.count())
-    except Exception:  # noqa: BLE001
-        rows = -1
-    return {"ok": True, "collection": COLLECTION, "chunks": rows, "embedding": EMBEDDING.name()}
-
-
-@app.post("/api/ingest")
-def api_ingest(request: IngestRequest) -> dict[str, Any]:
-    try:
-        return ingest_document(request.title, request.text, request.tag)
-    except Exception as error:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"{type(error).__name__}: {error}") from error
+app = FastAPI(title="NoteSeek")
 
 
 @app.get("/api/search")
 def api_search(
-    q: str = Query(..., min_length=1, max_length=500),
-    k: int = Query(5, ge=1, le=20),
-    tag: str | None = None,
-) -> dict[str, Any]:
-    try:
-        return search(q, k, tag)
-    except Exception as error:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"{type(error).__name__}: {error}") from error
+    q: str = Query(..., min_length=1, description="一句话查询"),
+    k: int = Query(8, ge=1, le=50),
+    tag: str = Query(""),
+):
+    # 故意不 try/except：seekdb 不可用要冒泡成 500，不能退化成 count=0
+    return search(q, k=k, tag=tag)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="NoteSeek")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8090)
-    parser.add_argument("--ingest", default="", help="把一个目录下的 .md 全部导入")
+# 注册在 /api 之后，同路径前缀下已存在的路由优先匹配
+app.mount(
+    "/",
+    StaticFiles(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"), html=True),
+    name="static",
+)
+
+
+# ---------------------------------------------------------------- 命令行
+
+
+def _title_of(raw: str, path: Path) -> str:
+    m = _H1_LINE_RE.search(raw)
+    return m.group(1) if m else path.stem
+
+
+def ingest_dir(dirpath: str, tag: str = "") -> dict:
+    """导入目录下所有 .md，返回 {files, chunks, failed}。单篇失败不影响其余。"""
+    root = Path(dirpath)
+    if not root.is_dir():
+        raise SystemExit(f"目录不存在：{dirpath}")
+
+    files = sorted(root.rglob("*.md"))
+    chunks = 0
+    failed: list[tuple[str, str]] = []
+    for path in files:
+        rel = str(path.relative_to(root))
+        try:
+            raw = path.read_text(encoding="utf-8")
+            res = ingest_document(_title_of(raw, path), raw, tag=tag)
+        except Exception as exc:  # noqa: BLE001 - 逐篇报错，不让一篇坏文件中断整批
+            failed.append((rel, f"{type(exc).__name__}: {exc}"))
+            print(f"  {rel:34} -> 失败 {exc}")
+            continue
+        chunks += res["count"]
+        print(f"  {rel:34} -> {res['count']:3} 片段  doc_id={res['doc_id']}")
+    return {"files": len(files), "chunks": chunks, "failed": failed}
+
+
+def _cli() -> int:
+    parser = argparse.ArgumentParser(prog="python app.py", description="NoteSeek 命令行入口")
+    parser.add_argument("--ingest", metavar="DIR", help="导入该目录下所有 .md 笔记")
+    parser.add_argument("--tag", default="", help="写入 metadata.tag，检索时可按它过滤")
     args = parser.parse_args()
 
-    if args.ingest:
-        folder = Path(args.ingest)
-        for path in sorted(folder.glob("*.md")):
-            result = ingest_document(path.stem, path.read_text(encoding="utf-8"), tag="sample")
-            print(f"[ingest] {result['title']}: {result['chunks']} 块")
+    if not args.ingest:
+        parser.print_help()
         return 0
 
-    import uvicorn
-
-    print(f"[noteseek] http://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
-    return 0
+    print(f"导入 {args.ingest} -> collection {COLLECTION_NAME}（tag={args.tag or '无'}）")
+    started = time.perf_counter()
+    result = ingest_dir(args.ingest, tag=args.tag)
+    print(
+        f"完成：{result['files']} 篇 / {result['chunks']} 片段，"
+        f"失败 {len(result['failed'])} 篇，耗时 {(time.perf_counter() - started) * 1000:.0f} ms"
+    )
+    return 1 if result["failed"] else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Windows 控制台默认 GBK，中文输出会乱码，先把 stdout 拉回 UTF-8
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    raise SystemExit(_cli())

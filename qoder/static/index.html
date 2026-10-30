@@ -1,93 +1,227 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>NoteSeek · 课程与文献速查</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoteSeek · 课程与文献速查台</title>
 <style>
-  :root { --ink:#16202b; --muted:#6b7a8c; --line:#e3e9ef; --accent:#1a6cff; --bg:#f7f9fc; }
+  :root {
+    --fg: #1c1f24;
+    --muted: #6b7280;
+    --line: #e3e7ee;
+    --bg: #f6f7f9;
+    --card: #fff;
+    --accent: #2f6feb;
+    --err-bg: #fdeceb;
+    --err-fg: #a51d1d;
+    --hint-bg: #eef4ff;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  header { padding: 28px 20px 10px; max-width: 860px; margin: 0 auto; }
-  h1 { margin:0 0 4px; font-size: 22px; letter-spacing:.3px; }
-  header p { margin:0; color:var(--muted); font-size: 13.5px; }
-  main { max-width: 860px; margin: 0 auto; padding: 12px 20px 60px; }
-  .box { display:flex; gap:8px; margin: 18px 0 10px; }
-  input[type=search] { flex:1; padding: 13px 15px; font-size:15px; border:1px solid var(--line);
-        border-radius: 10px; background:#fff; outline:none; }
-  input[type=search]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(26,108,255,.12); }
-  button { padding: 0 20px; border:0; border-radius:10px; background:var(--accent); color:#fff;
-           font-size:15px; cursor:pointer; }
-  button:disabled { opacity:.55; cursor: default; }
-  .meta { font-size:12.5px; color:var(--muted); min-height:20px; }
-  .meta b { color: var(--ink); font-weight:600; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:12px 0; }
-  .card h3 { margin:0 0 6px; font-size:15.5px; }
-  .card .src { font-size:12.5px; color:var(--accent); margin-bottom:8px; }
-  .card pre { margin:0; white-space:pre-wrap; word-break:break-word; font:13px/1.65 ui-monospace, Consolas, monospace;
-              color:#33414f; background:#f6f8fb; padding:10px 12px; border-radius:8px; max-height:220px; overflow:auto; }
-  .empty { color:var(--muted); font-size:14px; padding: 24px 0; text-align:center; }
-  .hint { font-size:12.5px; color:var(--muted); margin-top:6px; }
-  code { background:#eef2f7; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  body {
+    margin: 0;
+    padding: 32px 20px 64px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.65 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .5px; }
+  .lede { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+  form { display: flex; gap: 8px; margin-bottom: 14px; }
+  input[type=search] {
+    flex: 1;
+    padding: 11px 13px;
+    font: inherit;
+    color: inherit;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  button {
+    padding: 11px 20px;
+    font: inherit;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button[disabled] { background: #9bb4e0; cursor: progress; }
+  .meta { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+  .notice {
+    margin: 0 0 14px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    border: 1px solid var(--line);
+    background: var(--hint-bg);
+    color: #2a3a56;
+  }
+  .notice.error { background: var(--err-bg); border-color: #f6c6c4; color: var(--err-fg); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .card h2 { margin: 0 0 2px; font-size: 16px; font-weight: 600; }
+  .source { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  .snippet {
+    margin: 0;
+    padding: 10px 12px;
+    max-height: 13rem;
+    overflow: auto;
+    background: #f2f4f8;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>NoteSeek · 课程与文献速查</h1>
-  <p>把散落的笔记、论文摘录、会议记录丢进 seekdb，用一句话找回那一段，并且告诉你它出自哪儿。</p>
-</header>
+<div class="wrap">
+  <h1>NoteSeek 课程与文献速查台</h1>
+  <p class="lede">用一句话检索已导入的笔记，返回带出处的原文片段。</p>
 
-<main>
-  <div class="box">
-    <input id="q" type="search" placeholder="例如：REPEATABLE READ 是怎么避免幻读的？" autofocus />
-    <button id="go">检索</button>
-  </div>
-  <div class="hint">试试：<code>MVCC 的快照读</code> · <code>为什么用 B+ 树而不是哈希</code> · <code>RRF 融合排序</code> · <code>seekdb 的 Mock AI Service</code></div>
-  <div class="meta" id="meta"></div>
-  <div id="out"></div>
-</main>
+  <form id="search-form">
+    <input id="q" type="search" placeholder="例如：IK 分词和 ngram 差在哪" autocomplete="off" autofocus>
+    <button id="go" type="submit">搜索</button>
+  </form>
+
+  <p class="meta" id="meta" aria-live="polite"></p>
+  <div id="notice" class="notice" hidden></div>
+  <div id="results"></div>
+</div>
 
 <script>
-const q = document.getElementById('q');
-const go = document.getElementById('go');
-const out = document.getElementById('out');
-const meta = document.getElementById('meta');
+(function () {
+  "use strict";
 
-async function run() {
-  const text = q.value.trim();
-  if (!text) return;
-  go.disabled = true;
-  meta.innerHTML = '检索中…';
-  out.innerHTML = '';
-  try {
-    const res = await fetch('/api/search?k=5&q=' + encodeURIComponent(text));
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || res.status);
-    meta.innerHTML = `命中 <b>${data.count}</b> 段 · 检索方式 <b>${data.mode === 'hybrid' ? '向量 + 全文混合（RRF）' : '向量'}</b> · 耗时 <b>${data.took_ms} ms</b>`;
-    if (!data.results.length) {
-      out.innerHTML = '<div class="empty">没有命中。换个说法，或者先把笔记导入（见 README）。</div>';
+  var form = document.getElementById("search-form");
+  var input = document.getElementById("q");
+  var button = document.getElementById("go");
+  var metaEl = document.getElementById("meta");
+  var noticeEl = document.getElementById("notice");
+  var resultsEl = document.getElementById("results");
+
+  var MODE_LABEL = {
+    hybrid: "向量 + 全文混合（RRF）",
+    vector: "向量检索（后端不支持混合检索，已回退）"
+  };
+
+  // 一律用 textContent / createElement 建节点：笔记正文里的 < > & 永远是文本，
+  // 不会被当标签解析，也就没有注入面。
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function showNotice(text, isError) {
+    noticeEl.textContent = text;
+    noticeEl.classList.toggle("error", !!isError);
+    noticeEl.hidden = false;
+  }
+
+  function clearNotice() {
+    noticeEl.textContent = "";
+    noticeEl.hidden = true;
+  }
+
+  function renderMeta(data) {
+    var mode = MODE_LABEL[data.mode] || String(data.mode);
+    metaEl.textContent = "命中 " + data.count + " 条 · " + mode + " · 耗时 " + data.took_ms + " ms";
+  }
+
+  function renderResults(list) {
+    resultsEl.textContent = "";
+    list.forEach(function (hit) {
+      var card = el("article", "card");
+      card.appendChild(el("h2", null, hit.title || "（无标题）"));
+      card.appendChild(el("p", "source", hit.source));
+      card.appendChild(el("pre", "snippet", hit.snippet));
+      resultsEl.appendChild(card);
+    });
+  }
+
+  // 非 2xx 的响应体要读出来给人看：500 是纯文本，422 是 FastAPI 的 detail 数组。
+  async function messageOf(response) {
+    var text = "";
+    try {
+      text = await response.text();
+    } catch (e) {
+      return "HTTP " + response.status;
+    }
+    try {
+      var json = JSON.parse(text);
+      if (json && json.detail) {
+        return typeof json.detail === "string" ? json.detail : JSON.stringify(json.detail);
+      }
+    } catch (e) {
+      /* 不是 JSON，按纯文本处理 */
+    }
+    return text ? "HTTP " + response.status + " · " + text : "HTTP " + response.status;
+  }
+
+  async function runSearch() {
+    var query = input.value.trim();
+    if (!query) {
+      resultsEl.textContent = "";
+      metaEl.textContent = "";
+      showNotice("先输入一句话再检索。", false);
+      input.focus();
       return;
     }
-    out.innerHTML = data.results.map((r, i) => `
-      <div class="card">
-        <h3>${i + 1}. ${escapeHtml(r.title)}</h3>
-        <div class="src">出处：${escapeHtml(r.source)}</div>
-        <pre>${escapeHtml(r.snippet)}</pre>
-      </div>`).join('');
-  } catch (error) {
-    meta.textContent = '检索失败：' + error.message;
-  } finally {
-    go.disabled = false;
+
+    button.disabled = true;
+    button.textContent = "检索中…";
+    clearNotice();
+    metaEl.textContent = "检索中…";
+
+    try {
+      var url = "/api/search?" + new URLSearchParams({ q: query, k: "8" }).toString();
+      var response = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(await messageOf(response));
+
+      var data = await response.json();
+      renderMeta(data);
+      renderResults(data.results || []);
+      if (!data.results || data.results.length === 0) {
+        showNotice("没有命中「" + query + "」。换个说法再试，或先导入相关笔记。", false);
+      }
+    } catch (err) {
+      metaEl.textContent = "";
+      resultsEl.textContent = "";
+      showNotice("检索失败：" + (err && err.message ? err.message : String(err)), true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "搜索";
+    }
   }
-}
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+  form.addEventListener("submit", function (event) {
+    event.preventDefault(); // 不走真的表单提交
+    runSearch();
+  });
 
-go.addEventListener('click', run);
-q.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+  // 显式接 Enter：浏览器的隐式提交在自动化/合成按键下不一定触发，而且要先挡住输入法的
+  // 组合态回车，否则中文选词按回车就直接搜了。preventDefault 之后隐式提交不再发生，
+  // 不会和上面的 submit 重复触发。
+  input.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
+    event.preventDefault();
+    runSearch();
+  });
+
+  metaEl.textContent = "输入一句话开始检索。";
+})();
 </script>
 </body>
 </html>

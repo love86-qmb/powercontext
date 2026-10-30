@@ -1,122 +1,174 @@
 # NoteSeek · 课程与文献速查台
 
-> 赛题：Build with Qoder——用 Qoder 做一个让学习、科研和工作更高效的项目
-> 技术选型：**Qoder（开发 + Qoder Sites 发布）+ seekdb（向量与全文混合检索）**
+把 Markdown 笔记切块存进 seekdb，用一句话检索，返回带出处的原文片段——出处形如 `文档 › 小节 › 片段 #n`，能直接翻回原文。
 
-## 1. 解决什么问题
+后端是一个文件 `app.py`（FastAPI + pyseekdb），前端是两个静态页（搜索台 + 展示页），没有框架、没有 CDN、没有 ORM。
 
-学生和做项目的人都有同一个痛点：**资料是散的**。课程笔记在 Markdown 里、论文摘录在 PDF 里、
-比赛文档在几十个网页里。想找"上次那个隔离级别是怎么说的"，只能靠记忆里的关键词去一个个文件里翻，
-翻到了也说不清它出自哪一页。
+## 项目简介
 
-NoteSeek 做的就是这件事：**把资料丢进去，用一句话问回来，并且告诉你它出自哪一篇、哪一小节、第几段。**
+两条能力线：
 
-## 2. Qoder 与 seekdb 的分工
+- 导入：`python app.py --ingest screenshots/            # 开发过程截图与自查输出（开发记录的一部分）
+samples/notes`，一次吞一个目录的 `.md`，逐篇报片段数和 `doc_id`，单篇坏文件不中断整批。
+- 检索：`GET /api/search?q=...&k=8&tag=...`，优先走 seekdb 的混合检索（全文 + 向量，RRF 融合），后端不支持时自动回退纯向量，并在响应里标 `mode`。
 
-| 组成 | 在项目里干的活 |
-|---|---|
-| **Qoder** | 项目的主要开发工作：需求拆解、生成 FastAPI 后端与前端页面、切块与检索逻辑、调试（见 `QODER-LOG.md`），并通过 **Qoder Sites** 发布项目网站 |
-| **seekdb** | 核心检索能力：每个片段一行（向量 + 全文索引 + 元数据），`/api/search` 走 **向量 + 全文的混合检索（RRF 融合）**，并按 `tag` 做元数据过滤；写入后 `refresh_index()` 立即可查 |
+出处可追溯靠的是切块时就把结构记进 metadata（`doc_id / title / heading / seq`），而不是检索后再猜：每个片段只从属于它自己的 `## 小节`，找不到小节才退回文档标题。
 
-**为什么必须用 seekdb，而不是把所有笔记塞进 prompt**：笔记会越攒越多，不能每次全塞；
-而且"专有名词/型号/缩写"靠向量不可靠、"同义改写"靠全文不可靠——所以用 seekdb 的混合检索
-（向量路 + 全文路，RRF 按排名融合），这也正是 seekdb 与普通向量库的区别。
+## Qoder 与 seekdb 的分工
 
-## 3. 目录结构
+| | 负责什么 |
+| --- | --- |
+| **Qoder** | 六步 prompt + 六条验收，逐步产出并当场验：切块规则、`ingest_document`、`search`、HTTP 层、单文件前端、命令行入口和自查脚本。踩到的坑也是在这一步修掉的——重叠对齐把 60 字符吃成空串、`seq` 该按小节还是按文档编号、hybrid 不可用时的静默空结果、连接失败必须冒泡成 500 而不是 `count=0`。 |
+| **seekdb** | 一个引擎同时提供向量索引（HNSW + cosine）、全文索引（中文 IK 分词）和 `DBMS_HYBRID_SEARCH` 的 RRF 融合，外加 metadata 标量过滤。项目里不需要再单挂 Elasticsearch / Milvus，也不需要自己写融合排序。 |
+| **pyseekdb 1.4.0.post1** | 官方 SDK，`Client()` 按参数返回嵌入式或服务端客户端；`hybrid_search` 内部拼 search_parm → `DBMS_HYBRID_SEARCH.GET_SQL` → 执行 SQL，返回值按查询双层嵌套。 |
 
-```
-qoder/
-├── app.py                # FastAPI：切块入库、混合检索、静态页
-├── embedding.py          # 零依赖的本地嵌入函数（避免评审时下载模型）
-├── static/
-│   ├── index.html        # 检索界面（本地运行时的入口）
-│   └── landing.html      # 作品展示页（Qoder Sites 发布用）
-├── samples/
-│   └── notes/*.md        # 4 篇示例笔记（课程 3 篇 + 比赛笔记 1 篇）
-├── README.md             # 本文件：运行说明 + 验证样例
-└── requirements.txt
-```
+## 运行环境
 
-## 4. 运行环境
+- Python 3.10+（实测 3.12.10）
+- `fastapi==0.162.0`、`uvicorn==0.54.0`、`pyseekdb==1.4.0.post1`
+- seekdb 服务端 ≥ 1.3（实测容器 `seekdb` = oceanbase/seekdb 1.4.0.0，监听 2881）。低于 1.3 时 `refresh_index()` 是 no-op，刚写入的片段可能查不到。
+- 嵌入式模式只在 linux / mac-arm64 可用：`pylibseekdb` 的 wheel 平台标记限制了范围，Windows 上必须连服务端。
+- 首次运行会下载默认 embedding 模型（all-MiniLM-L6-v2 ONNX，约 90MB，走 `HF_ENDPOINT`，默认 hf-mirror）。中断过就重跑一次，下载器按文件续传。
+- Windows 控制台默认 GBK，`app.py` / `selfcheck.py` 已把 stdout 重配成 UTF-8；从外部脚本调用时建议再带 `PYTHONIOENCODING=utf-8`。
 
-| 项 | 要求 |
-|---|---|
-| Python | 3.10+ |
-| seekdb | `oceanbase/seekdb:latest`（本文实测 1.4.0.0，Docker 单机） |
-| pyseekdb | `1.4.0.post1`（`requirements.txt` 已锁定） |
-| 嵌入服务 | **不需要**：本地哈希嵌入（256 维，`embedding.py`），完全离线可复现 |
-| 浏览器 | 任一新版浏览器（检索界面是单文件 HTML） |
+## 离线兜底（评审环境拿不到模型权重时）
 
-## 5. 从零跑起来
+默认使用 pyseekdb 内置的 ONNX 句向量模型（384 维），**首次运行会自动下载权重**（约 80MB）。
+如果评审环境没有外网或 HuggingFace 不可达，加一个环境变量即可切到仓库内置的确定性哈希嵌入（256 维，完全离线）：
 
-```bash
-# 1) 起 seekdb
-docker run -d --name seekdb -p 2881:2881 -p 2886:2886 \
-  -v /your/data/seekdb:/var/lib/oceanbase oceanbase/seekdb:latest
-
-# 2) 装依赖
-cd qoder
-python -m pip install -r requirements.txt
-
-# 3) 灌入示例笔记（4 篇 / 13 个片段）
-SEEKDB_HOST=127.0.0.1 SEEKDB_PORT=2881 SEEKDB_USER=root SEEKDB_DB=test \
+`ash
+EMBEDDING_MODE=hash SEEKDB_HOST=127.0.0.1 SEEKDB_COLLECTION=noteseek_notes \
   python app.py --ingest samples/notes
+EMBEDDING_MODE=hash SEEKDB_HOST=127.0.0.1 SEEKDB_COLLECTION=noteseek_notes python app.py
+`
 
-# 4) 起服务
-SEEKDB_HOST=127.0.0.1 SEEKDB_PORT=2881 SEEKDB_USER=root SEEKDB_DB=test \
-  python app.py --port 8090
-```
+两种模式的向量维度不同（384 / 256），不能共用同一个集合，所以 EMBEDDING_MODE=hash 时
+集合名会自动加 _hash 后缀；换模式记得重新导入一次数据。
 
-打开 **http://127.0.0.1:8090** 就是检索界面。
-
-> Windows / macOS 必须用 `SEEKDB_HOST` 这种服务模式（`pylibseekdb` 嵌入式库只有 Linux 版）。
-> 不设 `SEEKDB_HOST` 时走嵌入式本地库（`SEEKDB_PATH`，默认 `./seekdb_data`）。
-
-## 6. 验证样例（可逐步执行）
-
-**初始状态**：`GET /health` 返回 `{"chunks": 13}`（灌完 4 篇示例笔记后）。
-
-| # | 输入 | 预期 | 实际（本机实测） |
-|---|---|---|---|
-| 1 | `REPEATABLE READ 是怎么避免幻读的` | 命中「01-数据库事务与隔离级别」，出处指向**四种隔离级别**小节 | ✅ `01-… › 四种隔离级别 › 片段 #2`，hybrid 301ms |
-| 2 | `为什么用 B+ 树而不是哈希索引` | 命中「02-B+树与索引优化」 | ✅ `02-… › B+ 树与索引优化 › 片段 #1`，hybrid 14.6ms |
-| 3 | `RRF 融合排序怎么算` | 命中「03-向量检索与HNSW」 | ✅ 命中该篇（`CAGRA 与 GPU 建图` 小节内含 RRF 段落） |
-| 4 | `seekdb 的 Mock AI Service 是干什么的` | 命中「04-OceanBase比赛笔记」 | ✅ `04-… › seekdb 赛道要点 › 片段 #2`，hybrid 99.5ms |
-| 5 | `回表和覆盖索引` | 命中「02-B+树与索引优化」，出处指向**聚簇索引/EXPLAIN** 相关小节 | ✅ `02-… › EXPLAIN 要看的字段 › 片段 #3` |
-| 6 | `脏读和不可重复读的区别` | 命中「01-数据库事务与隔离级别」 | ✅ 第 1 条即该篇首段 |
-
-**seekdb 起作用的证据**（三种，任选其一核对）：
-
-1. **接口返回里带检索方式与耗时**：`{"mode":"hybrid","took_ms":301.2,...}` —— `hybrid` 说明走的是
-   seekdb 的向量 + 全文混合检索，而不是内存里遍历。
-2. **每条结果的出处**：`source` 字段（`文档 › 小节 › 片段 #n`）来自 seekdb 里存的元数据
-   （`title / heading / seq / tag`），不是从全文重新切的。
-3. **直接查库**：`GET /health` 的 `chunks` 计数，或用 SQL 看片段（见下）。
+## 从零运行步骤
 
 ```bash
-curl "http://127.0.0.1:8090/health"
-# {"ok":true,"collection":"notes","chunks":13,"embedding":"tavern-hash-ngram"}
+# 1. 起 seekdb（已有一个能用的实例就跳过）
+docker run -d --name seekdb -p 2881:2881 -p 2886:2886 oceanbase/seekdb:latest
 
-curl "http://127.0.0.1:8090/api/search?q=RRF%20%E8%9E%8D%E5%90%88%E6%8E%92%E5%BA%8F&k=2"
+# 2. 装依赖
+pip install -r requirements.txt
+
+# 3. 指连接；集合名用环境变量隔离，别和别人的 notes 撞
+export SEEKDB_HOST=127.0.0.1:2881
+export SEEKDB_COLLECTION=noteseek_samples
+
+# 4. 导入示例笔记（4 篇 / 16 片段）
+python app.py --ingest samples/notes --tag samples
+
+# 5. 起服务
+python -m uvicorn app:app --host 127.0.0.1 --port 8090
+
+# 6. 浏览器打开
+#    搜索台  http://127.0.0.1:8090/
+#    展示页  http://127.0.0.1:8090/landing.html
+#    接口    http://127.0.0.1:8090/api/search?q=回表和覆盖索引&k=5
 ```
 
-```sql
--- seekdb 里（mysql -h127.0.0.1 -P2881 -uroot）
-USE test;
-SELECT collection_name, settings FROM sdk_collections;     -- 集合元数据（维度 / 嵌入函数）
-SHOW TABLES LIKE 'c$v2$%';                                 -- 片段表：_id / document / embedding VECTOR(256) / metadata json
+自查与验收：
+
+```bash
+python selfcheck.py      # 连库跑 5 个问题，打印「命中的文档 / 出处小节 / 耗时」表，全部命中才返回 0
+python acceptance.py     # 不连库，用内存集合验切块不变量（heading 归属、重叠、id 唯一、段号连续）
 ```
 
-## 7. 已知限制
+端口被占（`[Errno 10048]`）就换 8091，别去动占端口的进程。
 
-1. 只支持 Markdown / 纯文本；PDF 要先自己转成文本（比赛笔记里那篇就是从 PDF 摘的）。
-2. 单机单库、没有账号体系：`tag` 字段预留了"按课程/项目分库"的能力，多用户需要再加一层隔离。
-3. 本地哈希嵌入对**同义不同词**（"隔离级别" vs "isolation level"）不敏感，换成真实句向量模型会明显变好。
-4. 全文路的关键词提取是启发式的（取查询里最长的英文词 / 中文片段），极端 query 下融合排序会偏。
-5. `collection()` 在进程内缓存句柄：**重建集合后必须重启服务**，否则会拿着旧表名报 1146。
+环境变量：
 
-## 8. 数据与来源声明
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SEEKDB_HOST` | 空 | 非空走服务模式，支持写成 `host:port` |
+| `SEEKDB_PORT` | 2881 | `SEEKDB_HOST` 里带端口时以 `HOST` 为准 |
+| `SEEKDB_TENANT` / `SEEKDB_DATABASE` | `sys` / `test` | |
+| `SEEKDB_USER` / `SEEKDB_PASSWORD` | `root` / 空 | |
+| `SEEKDB_COLLECTION` | `notes` | 共享实例上换名隔离 |
+| `SEEKDB_PATH` | `./data/seekdb.db` | 仅嵌入式模式用到 |
 
-- `samples/notes/` 四篇笔记为本次参赛自写（内容依据公开教材与官方文档整理），不含他人版权内容。
-- 仓库内不含任何 API Key 或凭据；`embedding.py` 的哈希嵌入为自写实现。
-- seekdb 官方镜像与 `pyseekdb` 的使用见各自仓库许可。
+## 接口与数据模型
+
+`GET /api/search` 响应：
+
+```json
+{
+  "query": "回表和覆盖索引",
+  "mode": "hybrid",
+  "took_ms": 145.9,
+  "count": 5,
+  "results": [
+    {
+      "title": "索引结构笔记",
+      "heading": "回表是什么",
+      "snippet": "二级索引的叶子节点存的是索引列加主键值，不含其他列……",
+      "source": "索引结构笔记 › 回表是什么 › 片段 #1",
+      "distance": 0.0315
+    }
+  ]
+}
+```
+
+- `mode` 只会是 `hybrid` 或 `vector`；`distance` 是 RRF 的排名倒数和，只能比名次，不能当置信度。
+- 库连不上、SQL 报错一律冒泡成 HTTP 500，绝不用 `count=0` 糊过去——空结果和查不到是两件事。
+- `tag` 非空时 `where={"tag": tag}` 会同时下推进全文路和向量路两个分支。
+
+集合里每个片段：
+
+| 字段 | 内容 |
+| --- | --- |
+| `id` | `sha1(标题)[:12]` + `#` + 文档内全局序号（4 位补零），重复导入是 upsert |
+| `document` | `"标题 · 小节\n正文"`——小节标题拼进正文，让全文路和向量路都看得见它 |
+| `metadata` | `doc_id` / `title` / `heading` / `seq` / `tag` / `chars` / `added_at` |
+
+切块规则：段落边界优先、块间重叠 60 字符、单块上限 520 字符、代码围栏内不断块、`---` front matter 剥离、一级标题行本身不进正文、`seq` 按小节内从 1 计。
+
+## 验证样例表（问题 → 预期 → 实测）
+
+库内容：`samples/notes/` 4 篇示例笔记 = 16 片段，集合 `noteseek_samples`。
+
+| 问题 | 预期命中 | 实测 Top1（文档 › 小节） | mode | 耗时 |
+| --- | --- | --- | --- | --- |
+| REPEATABLE READ 是怎么避免幻读的 | `01-事务与隔离级别.md` | 事务与隔离级别笔记 › REPEATABLE READ 怎么避免幻读 | hybrid | 760.5 ms |
+| 为什么用 B+ 树而不是哈希索引 | `02-索引结构.md` | 索引结构笔记 › 为什么是 B+ 树 | hybrid | 147.8 ms |
+| RRF 融合排序怎么算 | `03-RRF融合排序.md` | 混合检索融合排序笔记 › RRF 要解决什么 | hybrid | 213.5 ms |
+| seekdb 的 Mock AI Service 是干什么的 | `04-seekdb-AI服务.md` | seekdb AI 服务笔记 › Mock AI Service 是干什么的 | hybrid | 143.0 ms |
+| 回表和覆盖索引 | `02-索引结构.md` | 索引结构笔记 › 回表是什么 | hybrid | 145.9 ms |
+
+5 题 Top1 全部落在预期笔记，没有一题串到别的文档。耗时说明：第一条带模型冷启动（760 ms，纯进程首调用实测到过 1540 ms），进程热了以后稳定在 140–210 ms。原始输出存成一张表在 `screenshots/step6-selfcheck.txt`。
+
+## 已知限制
+
+1. **中文语义路偏弱。** 默认 embedding 是英文 all-MiniLM-L6-v2（384 维，且 `dimension` 是 SDK 建集合时定死的），中文查询主要靠全文路和 RRF 兜住。换中文模型必须连维度一起改并整库重建，`get_collection()` 因此刻意不带隐式参数。
+2. **只有命令行导入。** 没有 `POST /api/ingest`，网页端不能投稿。
+3. **重导入会留孤儿。** `upsert` 让同一片段幂等，但小节改名或删段后，旧片段不会被清掉，需要先按 `doc_id` 删再写。
+4. **混合检索可能静默为空。** pyseekdb 里 `DBMS_HYBRID_SEARCH.GET_SQL` 没返回 SQL 时，SDK 直接给 `ids: [[]]`，"没命中"和"索引没建好"从接口上分不出来。
+5. **`tag` 是单值标量等值过滤**，多标签、模糊匹配都得另设计。
+6. **`snippet` 截 160 字符**，看整段要拿 `doc_id` + `seq` 回查，前端没做这个跳转。
+7. **`seq` 在小节内会重号**，所以出处必须带小节名才唯一（`文档 › 小节 › 片段 #1` 在多个小节下都存在）。
+8. **无鉴权、无分页、无并发写治理**，单机演示用。共享 seekdb 实例上集合名会撞车，务必用 `SEEKDB_COLLECTION` 隔离。
+
+## 数据来源声明
+
+- `samples/notes/` 与 `data/notes/` 里的笔记是本项目自撰的教学性说明，目的是给检索造一批可验证的语料，**不是 seekdb / OceanBase 官方文档，也不构成产品配置依据**；落地前请以官方文档核对。
+- 其中关于 AI 函数的说法（`04-seekdb-AI服务.md`）来自对本机 seekdb 1.4.0.0 实例的实测：`select ai_generate('hi')` 报 `1305 FUNCTION ai_generate does not exist`；`ai_embed('model','text')` 报 `ai model not found`；`oceanbase.__all_ai_model` 与 `oceanbase.__all_ai_model_endpoint` 存在且为空。换版本需要重测。
+- 全文索引 / IK 分词（`ik_smart`、`ik_max_word`）与 `rank_window_size`、`rank_constant` 的说法依据 pyseekdb 1.4.0.post1 的 SDK 签名和 seekdb 官方文档。
+- 展示页截图 `static/assets/shot-search-hybrid.png` 是本地实测页面（8 条命中、hybrid、耗时 329.3 ms），无外部数据。
+
+## 目录结构
+
+```
+app.py                    后端：连接 / 切块 / 导入 / 检索 / HTTP + 命令行入口
+acceptance.py             离线验收：内存集合，验切块不变量
+selfcheck.py              连库自查：5 个问题打印命中表
+requirements.txt          fastapi / uvicorn / pyseekdb
+static/index.html         搜索台
+static/landing.html       作品展示页
+static/assets/            展示页截图
+samples/notes/*.md        4 篇示例笔记（本次自查语料）
+data/notes/*.md           3 篇开发期笔记（集合 noteseek_notes，tag=cs101）
+screenshots/              每步验收记录
+```
