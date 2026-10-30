@@ -1,0 +1,14 @@
+﻿{
+  "name": "seekdb-browser-kb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "端侧 AI 推理 + seekdb 混合检索的迷你知识库",
+  "scripts": {
+    "start": "node server/index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "seekdb": "^1.4.0"
+  }
+}

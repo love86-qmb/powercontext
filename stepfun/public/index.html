@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>端侧知识库 · 浏览器本地向量化 + seekdb 混合检索</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>端侧知识库</h1>
+    <span class="sub">向量化在浏览器里做，检索交给 seekdb</span>
+  </div>
+  <div class="badges" id="badges">
+    <span class="badge" id="badge-backend">后端：检测中…</span>
+    <span class="badge" id="badge-dtype">精度：…</span>
+    <span class="badge" id="badge-status">模型：未加载</span>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row">
+      <div class="field">
+        <label for="model">嵌入模型</label>
+        <select id="model">
+          <option value="Xenova/multilingual-e5-small">Xenova/multilingual-e5-small（384 维，多语，推荐）</option>
+          <option value="Xenova/all-MiniLM-L6-v2">Xenova/all-MiniLM-L6-v2（384 维，英文）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="dtype">量化精度</label>
+        <select id="dtype">
+          <option value="q8">INT8（q8，默认）</option>
+          <option value="fp32">FP32（未量化基线）</option>
+          <option value="fp16">FP16</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="batch">批大小</label>
+        <select id="batch">
+          <option value="4">4</option>
+          <option value="8" selected>8</option>
+          <option value="16">16</option>
+          <option value="32">32</option>
+        </select>
+      </div>
+      <button id="load" class="primary">加载模型</button>
+    </div>
+    <p class="hint">
+      模型在**你的浏览器**里运行：优先 WebGPU，不支持时自动降级 WASM，界面会标明当前后端。
+      后端服务只接收向量，不做任何推理。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>1 · 导入语料</h2>
+    <div class="row">
+      <button id="load-samples" class="ghost">载入内置语料（samples/corpus）</button>
+      <label class="file">
+        <input type="file" id="files" multiple accept=".md,.txt,.json" />
+        <span>或选择本地文件</span>
+      </label>
+      <button id="reset" class="danger-ghost">清空知识库</button>
+    </div>
+    <textarea id="paste" rows="3" placeholder="也可以直接粘一段文本进来…"></textarea>
+    <div class="row">
+      <button id="ingest" class="primary" disabled>切块 + 本地向量化 + 写入 seekdb</button>
+      <span class="hint" id="ingest-hint">先加载模型</span>
+    </div>
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <div class="log" id="ingest-log"></div>
+  </section>
+
+  <section class="card">
+    <h2>2 · 检索（seekdb 混合检索）</h2>
+    <div class="row">
+      <input id="query" type="search" placeholder="例如：为什么 B+ 树比哈希索引更适合范围查询？" />
+      <button id="search" class="primary" disabled>检索</button>
+    </div>
+    <div class="meta" id="search-meta"></div>
+    <div id="results"></div>
+  </section>
+
+  <section class="card">
+    <h2>3 · 性能与质量（实测）</h2>
+    <div class="row">
+      <button id="bench" class="ghost" disabled>跑一次基准（10 题）</button>
+      <span class="hint" id="bench-hint">会依次：查询向量化 → seekdb 检索 → 记 Recall@5</span>
+    </div>
+    <table class="tbl">
+      <thead>
+        <tr><th>阶段</th><th>最近一次</th><th>中位数</th><th>次数</th></tr>
+      </thead>
+      <tbody id="timings">
+        <tr><td>模型下载 + 加载</td><td>-</td><td>-</td><td>0</td></tr>
+        <tr><td>文档向量化</td><td>-</td><td>-</td><td>0</td></tr>
+        <tr><td>写入 seekdb + 刷新索引</td><td>-</td><td>-</td><td>0</td></tr>
+        <tr><td>查询向量化</td><td>-</td><td>-</td><td>0</td></tr>
+        <tr><td>seekdb 混合检索</td><td>-</td><td>-</td><td>0</td></tr>
+        <tr><td>端到端（回车 → 结果可看）</td><td>-</td><td>-</td><td>0</td></tr>
+      </tbody>
+    </table>
+    <div class="log" id="bench-log"></div>
+  </section>
+</main>
+
+<footer>
+  <span>端侧推理：Transformers.js + ONNX Runtime Web（WebGPU / WASM）</span>
+  <span>·</span>
+  <span>存储与混合检索：seekdb（seekdb-js，RRF 融合在库内完成）</span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
