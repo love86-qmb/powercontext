@@ -1,0 +1,42 @@
+"""Stable identities for repositories referenced by SDD tasks."""
+
+import re
+
+_ASCII_LOWER = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
+
+
+def canonical_repository_key(value: str) -> str:
+    """Return a platform-independent repository key.
+
+    The result is derived solely from the supplied text. Repeated separators are
+    collapsed, a leading UNC prefix is retained, and trailing separators are
+    removed except for filesystem roots.
+    """
+
+    if not value or value.isspace():
+        raise ValueError("repository identity must not be empty or whitespace-only")
+
+    normalized = value.replace("\\", "/")
+
+    # Preserve the UNC marker while collapsing every other separator run.
+    is_unc = normalized.startswith("//")
+    normalized = re.sub(r"/+", "/", normalized)
+    if is_unc:
+        normalized = "/" + normalized
+
+    is_posix_root = normalized == "/"
+    is_drive_root = (
+        len(normalized) == 3
+        and normalized[1] == ":"
+        and normalized[2] == "/"
+        and ("A" <= normalized[0] <= "Z" or "a" <= normalized[0] <= "z")
+    )
+    is_unc_root = normalized == "//"
+
+    if not (is_posix_root or is_drive_root or is_unc_root):
+        normalized = normalized.rstrip("/")
+
+    return normalized.translate(_ASCII_LOWER)

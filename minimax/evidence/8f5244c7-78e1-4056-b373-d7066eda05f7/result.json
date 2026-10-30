@@ -1,0 +1,32 @@
+{
+  "run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+  "status": "completed",
+  "model": "MiniMax-M3",
+  "model_called": true,
+  "minimax_request_id": "0733657997e74ac9a3b52c4e4a669481",
+  "usage": {
+    "total_tokens": 7358,
+    "total_characters": 0,
+    "prompt_tokens": 1319,
+    "completion_tokens": 6039,
+    "completion_tokens_details": {
+      "reasoning_tokens": 5521
+    },
+    "prompt_tokens_details": {
+      "cached_tokens": 182
+    }
+  },
+  "code_changed": true,
+  "result_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+  "powercontext_scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+  "powercontext_citation": {
+    "memory_ref": {
+      "family": "memory",
+      "artifact_id": "memory",
+      "revision": 1
+    },
+    "entry_id": "mem_ent_18651e89a6fc45bfa9cde2d7d79ecafa",
+    "entry_version_id": "mem_ver_b7c32d5e31fe4f7dac8d790e7fb47f3a"
+  },
+  "verification_output": "test_empty_value_is_rejected (minimax.validation.test_task_identity.RepositoryIdentityTest.test_empty_value_is_rejected) ... ok\ntest_posix_path_is_normalized_without_filesystem_access (minimax.validation.test_task_identity.RepositoryIdentityTest.test_posix_path_is_normalized_without_filesystem_access) ... ok\ntest_unc_prefix_is_preserved (minimax.validation.test_task_identity.RepositoryIdentityTest.test_unc_prefix_is_preserved) ... ok\ntest_windows_and_posix_spellings_share_one_key (minimax.validation.test_task_identity.RepositoryIdentityTest.test_windows_and_posix_spellings_share_one_key) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.001s\n\nOK"
+}

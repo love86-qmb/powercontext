@@ -1,0 +1,103 @@
+Task ID: stable-repository-identity
+Description: Implement the specified platform-independent repository identity normalization without changing the immutable tests.
+Allowed file changes: ["minimax/sdd_context/task_identity.py"]
+Immutable tests: ["minimax/validation/test_task_identity.py"]
+Verification command: ["python", "-m", "unittest", "minimax.validation.test_task_identity", "-v"]
+
+PowerContext recall:
+- No prior matching PowerContext memory.
+
+Retrieved authoritative context:
+<context kind="code" source="minimax/sdd_context/task_identity.py" sha256="d6251436366bdb5a68e8039c309f675d99664b04d4f8514feb5b46ade5d5a700">
+"""Stable identities for repositories referenced by SDD tasks."""
+
+
+def canonical_repository_key(value: str) -> str:
+    """Return a platform-independent repository key.
+
+    This initial implementation is intentionally incomplete; the submitted SDD
+    task supplies the governing specification and regression tests to MiniMax.
+    """
+
+    return value.replace("\\", "/")
+
+</context>
+
+<context kind="decision" source="minimax/context/decisions.md" sha256="7e038411bd1cd5020898e331d6f6d434374d818148a94a6643866b27a947218f">
+# Active decisions
+
+- The OceanBase/seekdb tables are the authoritative task ledger; evidence files
+  are review exports only.
+- MiniMax may change only paths named by `allowed_changes`; specification and
+  regression tests are immutable during a run.
+- A failed verification restores every changed file and records a failed run.
+- Reuse requires the same task definition, retrieved context, and current code
+  digest as a previously verified result.
+
+</context>
+
+<context kind="progress" source="minimax/context/progress.md" sha256="f2c97b2ed11573548a65658918976d422afdde281c488509f2e06cb578c1067f">
+# Current progress
+
+The repository identity regression is pending. The specification and immutable
+tests are present. The current implementation only changes path separators and
+does not yet satisfy case, duplicate separator, trailing separator, UNC, or
+empty-input requirements.
+
+</context>
+
+<context kind="specification" source="minimax/specs/task-identity.md" sha256="cce76af86d7fa85e7886e03a5143eab317e0413a620fb1858a1de7d85f2262c8">
+# Stable repository identity
+
+The SDD task ledger must use one stable key for the same checkout spelling on
+Windows or POSIX. `canonical_repository_key(value)` is governed by these rules:
+
+1. Reject an empty or whitespace-only value with `ValueError`.
+2. Convert backslashes to forward slashes.
+3. Collapse repeated separators, except that a leading UNC `//` remains `//`.
+4. Remove trailing separators unless the value is `/` or a drive root such as `c:/`.
+5. Normalize an ASCII Windows drive letter and all other ASCII path letters to lowercase.
+6. Do not access the filesystem. The result depends only on the supplied text.
+
+Examples:
+
+- `C:\\Work\\PowerContext\\` → `c:/work/powercontext`
+- `c:/work//powercontext` → `c:/work/powercontext`
+- `//SERVER/Share/Repo/` → `//server/share/repo`
+- `/srv/PowerContext/` → `/srv/powercontext`
+
+The immutable regression tests define the accepted boundary behavior.
+
+</context>
+
+<context kind="test" source="minimax/validation/test_task_identity.py" sha256="1ca3cd8151654775403b7c6958b9edadae565088b768d99c65f0db01b604a8ef">
+from __future__ import annotations
+
+import unittest
+
+from minimax.sdd_context.task_identity import canonical_repository_key
+
+
+class RepositoryIdentityTest(unittest.TestCase):
+    def test_windows_and_posix_spellings_share_one_key(self) -> None:
+        self.assertEqual(canonical_repository_key("C:\\Work\\PowerContext\\"), "c:/work/powercontext")
+        self.assertEqual(canonical_repository_key("c:/work//powercontext"), "c:/work/powercontext")
+
+    def test_unc_prefix_is_preserved(self) -> None:
+        self.assertEqual(canonical_repository_key("\\\\SERVER\\Share\\Repo\\"), "//server/share/repo")
+
+    def test_posix_path_is_normalized_without_filesystem_access(self) -> None:
+        self.assertEqual(canonical_repository_key("/srv/PowerContext/"), "/srv/powercontext")
+        self.assertEqual(canonical_repository_key("/"), "/")
+
+    def test_empty_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            canonical_repository_key("  ")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+</context>
+
+Return exactly this JSON shape: {"summary":"...","changes":[{"path":"allowed/path.py","content":"complete UTF-8 file"}],"test_rationale":"..."}. Change only allowed files and satisfy the immutable specification and tests.

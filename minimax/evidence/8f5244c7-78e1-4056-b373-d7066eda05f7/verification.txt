@@ -1,0 +1,9 @@
+test_empty_value_is_rejected (minimax.validation.test_task_identity.RepositoryIdentityTest.test_empty_value_is_rejected) ... ok
+test_posix_path_is_normalized_without_filesystem_access (minimax.validation.test_task_identity.RepositoryIdentityTest.test_posix_path_is_normalized_without_filesystem_access) ... ok
+test_unc_prefix_is_preserved (minimax.validation.test_task_identity.RepositoryIdentityTest.test_unc_prefix_is_preserved) ... ok
+test_windows_and_posix_spellings_share_one_key (minimax.validation.test_task_identity.RepositoryIdentityTest.test_windows_and_posix_spellings_share_one_key) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK

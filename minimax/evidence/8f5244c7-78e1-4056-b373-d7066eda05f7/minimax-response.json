@@ -1,0 +1,10 @@
+{
+  "summary": "Implemented stable, platform-independent repository identity normalization with validation, separator collapsing, UNC preservation, trailing-separator handling, drive-root recognition, and ASCII-only lowercase normalization.",
+  "changes": [
+    {
+      "path": "minimax/sdd_context/task_identity.py",
+      "content": "\"\"\"Stable identities for repositories referenced by SDD tasks.\"\"\"\n\nimport re\n\n\n_ASCII_LOWER = str.maketrans(\n    \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\",\n    \"abcdefghijklmnopqrstuvwxyz\",\n)\n\n\ndef canonical_repository_key(value: str) -> str:\n    \"\"\"Return a platform-independent repository key.\n\n    The result is derived solely from the supplied text. Repeated separators are\n    collapsed, a leading UNC prefix is retained, and trailing separators are\n    removed except for filesystem roots.\n    \"\"\"\n\n    if not value or value.isspace():\n        raise ValueError(\"repository identity must not be empty or whitespace-only\")\n\n    normalized = value.replace(\"\\\\\", \"/\")\n\n    # Preserve the UNC marker while collapsing every other separator run.\n    is_unc = normalized.startswith(\"//\")\n    normalized = re.sub(r\"/+\", \"/\", normalized)\n    if is_unc:\n        normalized = \"/\" + normalized\n\n    is_posix_root = normalized == \"/\"\n    is_drive_root = (\n        len(normalized) == 3\n        and normalized[1] == \":\"\n        and normalized[2] == \"/\"\n        and (\"A\" <= normalized[0] <= \"Z\" or \"a\" <= normalized[0] <= \"z\")\n    )\n    is_unc_root = normalized == \"//\"\n\n    if not (is_posix_root or is_drive_root or is_unc_root):\n        normalized = normalized.rstrip(\"/\")\n\n    return normalized.translate(_ASCII_LOWER)\n"
+    }
+  ],
+  "test_rationale": "The implementation rejects empty and whitespace-only values, normalizes Windows and POSIX spellings, collapses duplicate separators, retains the leading UNC prefix, removes trailing separators while preserving roots, and lowercases ASCII letters without filesystem access. The immutable tests remain unchanged and are covered by `python -m unittest minimax.validation.test_task_identity -v`."
+}

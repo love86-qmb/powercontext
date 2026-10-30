@@ -1,0 +1,30 @@
+{
+  "task_id": "stable-repository-identity",
+  "project_key": "powercontext-minimax-sdd",
+  "description": "Implement the specified platform-independent repository identity normalization without changing the immutable tests.",
+  "specifications": [
+    "minimax/specs/task-identity.md"
+  ],
+  "code_paths": [
+    "minimax/sdd_context/task_identity.py"
+  ],
+  "test_paths": [
+    "minimax/validation/test_task_identity.py"
+  ],
+  "decision_paths": [
+    "minimax/context/decisions.md"
+  ],
+  "progress_paths": [
+    "minimax/context/progress.md"
+  ],
+  "allowed_changes": [
+    "minimax/sdd_context/task_identity.py"
+  ],
+  "verification_command": [
+    "python",
+    "-m",
+    "unittest",
+    "minimax.validation.test_task_identity",
+    "-v"
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "database_engine": "mysql",
+  "server": {
+    "version": "5.7.25-OceanBase seekdb-v1.2.0.0"
+  },
+  "contexts": [
+    {
+      "kind": "code",
+      "source_path": "minimax/sdd_context/task_identity.py",
+      "source_digest": "d6251436366bdb5a68e8039c309f675d99664b04d4f8514feb5b46ade5d5a700",
+      "status": "superseded",
+      "created_at": "2026-10-30T05:53:47.665855+00:00",
+      "updated_at": "2026-10-30T06:01:17.867785+00:00"
+    },
+    {
+      "kind": "code",
+      "source_path": "minimax/sdd_context/task_identity.py",
+      "source_digest": "27d08124b55b09265e39c75e4ba7db51fbe38358d16bec88d6d95e98760d6dfe",
+      "status": "active",
+      "created_at": "2026-10-30T06:01:17.867785+00:00",
+      "updated_at": "2026-10-30T06:04:12.286729+00:00"
+    },
+    {
+      "kind": "decision",
+      "source_path": "minimax/context/decisions.md",
+      "source_digest": "7e038411bd1cd5020898e331d6f6d434374d818148a94a6643866b27a947218f",
+      "status": "active",
+      "created_at": "2026-10-30T05:53:56.884738+00:00",
+      "updated_at": "2026-10-30T06:04:19.559058+00:00"
+    },
+    {
+      "kind": "progress",
+      "source_path": "minimax/context/progress.md",
+      "source_digest": "f2c97b2ed11573548a65658918976d422afdde281c488509f2e06cb578c1067f",
+      "status": "active",
+      "created_at": "2026-10-30T05:54:01.125970+00:00",
+      "updated_at": "2026-10-30T06:04:22.996499+00:00"
+    },
+    {
+      "kind": "specification",
+      "source_path": "minimax/specs/task-identity.md",
+      "source_digest": "cce76af86d7fa85e7886e03a5143eab317e0413a620fb1858a1de7d85f2262c8",
+      "status": "active",
+      "created_at": "2026-10-30T05:53:41.155215+00:00",
+      "updated_at": "2026-10-30T06:04:08.827703+00:00"
+    },
+    {
+      "kind": "test",
+      "source_path": "minimax/validation/test_task_identity.py",
+      "source_digest": "1ca3cd8151654775403b7c6958b9edadae565088b768d99c65f0db01b604a8ef",
+      "status": "active",
+      "created_at": "2026-10-30T05:53:52.357932+00:00",
+      "updated_at": "2026-10-30T06:04:15.916720+00:00"
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "b2b19bfa-6807-42fb-b581-75cf0f9306fd",
+      "status": "failed",
+      "model": "MiniMax-M3",
+      "reused_from_run_id": null,
+      "prompt_sha256": null,
+      "response_sha256": null,
+      "patch_sha256": null,
+      "input_code_digest": "48dd250d4f8d4dd22233ebf3e1ba6d02ed5983596437d20bb24569616ab7a87d",
+      "result_code_digest": null,
+      "started_at": "2026-10-30T05:57:22.060763+00:00",
+      "completed_at": "2026-10-30T05:57:29.139425+00:00"
+    },
+    {
+      "run_id": "96c20f3f-2f56-4a43-8856-44f85cb58a53",
+      "status": "failed",
+      "model": "MiniMax-M3",
+      "reused_from_run_id": null,
+      "prompt_sha256": null,
+      "response_sha256": null,
+      "patch_sha256": null,
+      "input_code_digest": "48dd250d4f8d4dd22233ebf3e1ba6d02ed5983596437d20bb24569616ab7a87d",
+      "result_code_digest": null,
+      "started_at": "2026-10-30T05:59:02.823930+00:00",
+      "completed_at": "2026-10-30T05:59:08.989040+00:00"
+    },
+    {
+      "run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+      "status": "completed",
+      "model": "MiniMax-M3",
+      "reused_from_run_id": null,
+      "prompt_sha256": "cb1c33ed0c80e533b20294df40f07af5711df5790f3de08088e35ccdfca54e9b",
+      "response_sha256": "3ed5affa24fbe445d573425d2ff509b8a6bdd1526f626a65a1b97cbc2136b85e",
+      "patch_sha256": "8aba952c4faa9447b26dcff8b75dcb38daf2749820994a5e427aac9c8d39252b",
+      "input_code_digest": "48dd250d4f8d4dd22233ebf3e1ba6d02ed5983596437d20bb24569616ab7a87d",
+      "result_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+      "started_at": "2026-10-30T06:00:21.786541+00:00",
+      "completed_at": "2026-10-30T06:01:35.788962+00:00"
+    },
+    {
+      "run_id": "e6fb1a08-41e7-45d1-a427-830c98ab2073",
+      "status": "reused",
+      "model": "MiniMax-M3",
+      "reused_from_run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+      "prompt_sha256": null,
+      "response_sha256": null,
+      "patch_sha256": null,
+      "input_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+      "result_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+      "started_at": "2026-10-30T06:02:33.511728+00:00",
+      "completed_at": "2026-10-30T06:02:33.511751+00:00"
+    },
+    {
+      "run_id": "0021ad9a-e766-464b-9efd-d9847549d509",
+      "status": "reused",
+      "model": "MiniMax-M3",
+      "reused_from_run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+      "prompt_sha256": null,
+      "response_sha256": null,
+      "patch_sha256": null,
+      "input_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+      "result_code_digest": "34af923500824b82fa1b1f43d7f737690b69ab5d78534e3892b24fb146a5261e",
+      "started_at": "2026-10-30T06:04:32.476992+00:00",
+      "completed_at": "2026-10-30T06:04:32.477029+00:00"
+    }
+  ],
+  "events": [
+    {
+      "run_id": "b2b19bfa-6807-42fb-b581-75cf0f9306fd",
+      "operation": "recall",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"citations\": []}",
+      "created_at": "2026-10-30T05:57:26.256112+00:00"
+    },
+    {
+      "run_id": "96c20f3f-2f56-4a43-8856-44f85cb58a53",
+      "operation": "recall",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"citations\": []}",
+      "created_at": "2026-10-30T05:59:07.611806+00:00"
+    },
+    {
+      "run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+      "operation": "recall",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"citations\": []}",
+      "created_at": "2026-10-30T06:00:25.151353+00:00"
+    },
+    {
+      "run_id": "8f5244c7-78e1-4056-b373-d7066eda05f7",
+      "operation": "remember",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"memory_ref\": {\"family\": \"memory\", \"artifact_id\": \"memory\", \"revision\": 1}, \"entry_id\": \"mem_ent_18651e89a6fc45bfa9cde2d7d79ecafa\", \"entry_version_id\": \"mem_ver_b7c32d5e31fe4f7dac8d790e7fb47f3a\"}",
+      "created_at": "2026-10-30T06:01:35.350751+00:00"
+    },
+    {
+      "run_id": "e6fb1a08-41e7-45d1-a427-830c98ab2073",
+      "operation": "recall",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"citations\": [{\"memory_ref\": {\"family\": \"memory\", \"artifact_id\": \"memory\", \"revision\": 1}, \"entry_id\": \"mem_ent_18651e89a6fc45bfa9cde2d7d79ecafa\", \"entry_version_id\": \"mem_ver_b7c32d5e31fe4f7dac8d790e7fb47f3a\"}]}",
+      "created_at": "2026-10-30T06:02:41.025086+00:00"
+    },
+    {
+      "run_id": "0021ad9a-e766-464b-9efd-d9847549d509",
+      "operation": "recall",
+      "scope_id": "scp_4n4castgcfscgj8t5xb1m6aem2",
+      "citation_json": "{\"citations\": [{\"memory_ref\": {\"family\": \"memory\", \"artifact_id\": \"memory\", \"revision\": 1}, \"entry_id\": \"mem_ent_18651e89a6fc45bfa9cde2d7d79ecafa\", \"entry_version_id\": \"mem_ver_b7c32d5e31fe4f7dac8d790e7fb47f3a\"}]}",
+      "created_at": "2026-10-30T06:04:37.420035+00:00"
+    }
+  ]
+}

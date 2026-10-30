@@ -1,0 +1,61 @@
+[
+  {
+    "operation": "initialize",
+    "rows": 0
+  },
+  {
+    "operation": "upsert_context",
+    "rows": 1,
+    "kind": "specification",
+    "source_path": "minimax/specs/task-identity.md"
+  },
+  {
+    "operation": "upsert_context",
+    "rows": 1,
+    "kind": "code",
+    "source_path": "minimax/sdd_context/task_identity.py"
+  },
+  {
+    "operation": "upsert_context",
+    "rows": 1,
+    "kind": "test",
+    "source_path": "minimax/validation/test_task_identity.py"
+  },
+  {
+    "operation": "upsert_context",
+    "rows": 1,
+    "kind": "decision",
+    "source_path": "minimax/context/decisions.md"
+  },
+  {
+    "operation": "upsert_context",
+    "rows": 1,
+    "kind": "progress",
+    "source_path": "minimax/context/progress.md"
+  },
+  {
+    "operation": "retrieve_active",
+    "rows": 5,
+    "task_id": "stable-repository-identity"
+  },
+  {
+    "operation": "find_reusable_run",
+    "rows": 1,
+    "task_id": "stable-repository-identity"
+  },
+  {
+    "operation": "start_run",
+    "rows": 1,
+    "run_id": "0021ad9a-e766-464b-9efd-d9847549d509"
+  },
+  {
+    "operation": "powercontext_event",
+    "rows": 1,
+    "powercontext_operation": "recall"
+  },
+  {
+    "operation": "evidence_snapshot",
+    "rows": 17,
+    "task_id": "stable-repository-identity"
+  }
+]
